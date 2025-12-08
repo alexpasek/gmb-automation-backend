@@ -1,0 +1,25 @@
+
+step 1 http://127.0.0.1:8787/accounts
+step 2 find all accounts under taras bulba http://127.0.0.1:8787/locations?accountId=116118369255335894193, 
+
+add all info to profiles 
+curl -X POST "http://127.0.0.1:8787/profiles/sync-from-google" \
+  -H "Content-Type: application/json" \
+  -d '{"accountId":"116118369255335894193"}'
+
+
+
+fetch profiles.     node src/export-profiles-from-locations.mjs
+
+
+run log on backend 
+npx wrangler tail gmb-automation-backend --format=pretty
+
+
+
+http://127.0.0.1:8787/oauth2callback  // local google redirects url change it for local work in env.
+
+ommant to udate front end 
+cd gmbfrontend
+VITE_BACKEND_URL=https://gmb-automation-backend.webtoronto22.workers.dev npm run build
+npx wrangler pages deploy dist --project-name gmbfrontend 
