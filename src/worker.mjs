@@ -26,9 +26,14 @@ import {
     getAllScheduledPhotos,
     uploadPhotoToGmb,
     fetchLatestMedia,
-    fetchMediaPaged
+    fetchMediaPaged,
+    ensureAbsoluteMediaUrl,
+    buildQuickLinkLines,
+    insertQuickLinksBeforeHashtags,
+    composeAiTemplatePost,
+    fetchLocationBasics
 } from "./gmb.mjs";
-import { aiGenerateSummaryAndHashtags, pickNeighbourhood } from "./ai.mjs";
+import { aiGenerateSummaryAndHashtags, pickNeighbourhood, safeJoinHashtags } from "./ai.mjs";
 
 const VERSION = "1.0.0";
 
@@ -514,7 +519,9 @@ async function handleRequest(request, env, ctx) {
 
         if (body.hasOwnProperty("cta")) defaults.cta = body.cta;
         if (body.hasOwnProperty("linkUrl")) defaults.linkUrl = body.linkUrl;
-        if (body.hasOwnProperty("mediaUrl")) defaults.mediaUrl = body.mediaUrl;
+        if (body.hasOwnProperty("mediaUrl")) {
+            defaults.mediaUrl = ensureAbsoluteMediaUrl(env, body.mediaUrl || "");
+        }
         if (body.hasOwnProperty("phone")) defaults.phone = body.phone;
         if (body.hasOwnProperty("linkOptions")) {
             const opts = Array.isArray(body.linkOptions) ? body.linkOptions : [];
@@ -622,31 +629,25 @@ async function handleRequest(request, env, ctx) {
         if (!profile) return jsonResponse({ error: "Profile not found" }, 404);
 
         const defaults = profile.defaults || {};
-        const neighbourhood = pickNeighbourhood(profile);
-        const gen = await aiGenerateSummaryAndHashtags(env, profile, neighbourhood);
-        const quickLinks = [
-                { label: "Reviews ►", url: defaults.reviewLink },
-                { label: "Service Area ►", url: defaults.serviceAreaLink },
-                { label: "Area Map ►", url: defaults.areaMapLink },
-            ]
-            .map((q) => {
-                const val = String(q.url || "").trim();
-                return /^https?:\/\//i.test(val) ? `${q.label} ${val}` : "";
-            })
-            .filter(Boolean);
-        let post =
-            (gen.summary || "") +
-            (gen.hashtags && gen.hashtags.length ?
-                "\n\n" + gen.hashtags.join(" ") :
-                "");
-        if (quickLinks.length) {
-            post += "\n\n" + quickLinks.join("\n");
+        const basics = await fetchLocationBasics(env, profile);
+        const built = await composeAiTemplatePost(env, profile, {}, basics);
+        const quickLinks = buildQuickLinkLines(defaults);
+        let post = insertQuickLinksBeforeHashtags((built.summary || "").trim(), quickLinks);
+        const hashtags = built.hashtags || [];
+        if (hashtags.length) {
+            const spaceLeft = 1450 - post.length;
+            if (spaceLeft > 20) {
+                const tagLine = safeJoinHashtags(hashtags, spaceLeft);
+                if (tagLine && post.length + 2 + tagLine.length <= 1450) {
+                    post += "\n\n" + tagLine;
+                }
+            }
         }
         return jsonResponse({
             profileId,
             businessName: profile.businessName || "",
             city: profile.city || "",
-            neighbourhood,
+            neighbourhood: built.neighbourhood || "",
             post
         });
     }

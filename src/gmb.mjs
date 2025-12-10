@@ -22,6 +22,7 @@ const CTA_LABELS = {
     SHOP: "Shop",
     SIGN_UP: "Sign up"
 };
+const DEFAULT_MEDIA_BASE = "https://gmb-automation-backend.webtoronto22.workers.dev";
 
 async function ensureKvTable(env) {
     await env.D1_DB.prepare(`
@@ -46,17 +47,64 @@ function normalizeProfiles(list) {
     });
 }
 
+function normalizeProfileMedia(env, profile) {
+    if (!profile || typeof profile !== "object") return profile;
+    const out = {...profile };
+    if (out.defaults && typeof out.defaults === "object") {
+        const defaults = {...out.defaults };
+        if (defaults.mediaUrl) {
+            const before = defaults.mediaUrl;
+            defaults.mediaUrl = ensureAbsoluteMediaUrl(env, defaults.mediaUrl);
+            if (!defaults.mediaUrl.startsWith("http")) {
+                console.warn("normalizeProfileMedia: defaults.mediaUrl stayed relative", { profileId: out.profileId, before, after: defaults.mediaUrl });
+            }
+        }
+        if (defaults.overlayUrl) {
+            const before = defaults.overlayUrl;
+            defaults.overlayUrl = ensureAbsoluteMediaUrl(env, defaults.overlayUrl);
+            if (!defaults.overlayUrl.startsWith("http")) {
+                console.warn("normalizeProfileMedia: defaults.overlayUrl stayed relative", { profileId: out.profileId, before, after: defaults.overlayUrl });
+            }
+        }
+        out.defaults = defaults;
+    }
+    if (Array.isArray(out.photoPool)) {
+        out.photoPool = out.photoPool.map((entry) => {
+            if (!entry) return entry;
+            if (typeof entry === "string") {
+                const before = entry;
+                const full = ensureAbsoluteMediaUrl(env, entry);
+                if (!/^https?:\/\//i.test(full)) {
+                    console.warn("normalizeProfileMedia: photoPool entry stayed relative", { profileId: out.profileId, before, after: full });
+                }
+                return full || entry;
+            }
+            if (entry && typeof entry === "object") {
+                const before = entry.url || "";
+                const full = ensureAbsoluteMediaUrl(env, entry.url || "");
+                if (!/^https?:\/\//i.test(full)) {
+                    console.warn("normalizeProfileMedia: photoPool object.url stayed relative", { profileId: out.profileId, before, after: full });
+                }
+                return {...entry, url: full || entry.url };
+            }
+            return entry;
+        });
+    }
+    return out;
+}
+
 export function isProfileActive(profile) {
     return !!(profile && profile.profileId && profile.disabled !== true);
 }
 
 export async function getProfiles(env) {
     const raw = (await getJson(env, "profiles", [])) || [];
-    return normalizeProfiles(raw);
+    return normalizeProfiles(raw).map((p) => normalizeProfileMedia(env, p));
 }
 
 export async function saveProfiles(env, list) {
-    await setJson(env, "profiles", normalizeProfiles(list));
+    const normalized = normalizeProfiles(list).map((p) => normalizeProfileMedia(env, p));
+    await setJson(env, "profiles", normalized);
 }
 
 // --- D1 scheduled posts helpers ---
@@ -89,7 +137,7 @@ async function readScheduledRows(env, includeAll = false) {
         profileId: row.profile_id,
         runAt: row.run_at,
         createdAt: row.created_at,
-        body: row.body_json ? JSON.parse(row.body_json) : {},
+        body: row.body_json ? normalizeBodyMedia(env, JSON.parse(row.body_json)) : {},
         status: row.status || "QUEUED",
         postedAt: row.posted_at || null,
         lastUrl: row.last_url || ""
@@ -98,7 +146,8 @@ async function readScheduledRows(env, includeAll = false) {
 
 async function upsertScheduledRow(env, item) {
     await ensureScheduledTable(env);
-    const bodyJson = JSON.stringify(item.body || {});
+    const normalizedBody = normalizeBodyMedia(env, item.body || {});
+    const bodyJson = JSON.stringify(normalizedBody);
     await env.D1_DB.prepare(
             `
     INSERT INTO scheduled_posts (id, profile_id, run_at, created_at, body_json, status, posted_at, last_url)
@@ -152,6 +201,7 @@ export async function saveScheduledPosts(env, list) {
     await ensureScheduledTable(env);
     for (const item of list) {
         const id = item.id || crypto.randomUUID();
+        const body = normalizeBodyMedia(env, item.body || {});
         await env.D1_DB.prepare(
                 `
       INSERT INTO scheduled_posts (id, profile_id, run_at, created_at, body_json, status)
@@ -169,7 +219,7 @@ export async function saveScheduledPosts(env, list) {
                 item.profileId,
                 item.runAt,
                 item.createdAt || new Date().toISOString(),
-                JSON.stringify(item.body || {})
+                JSON.stringify(body)
             )
             .run();
     }
@@ -217,7 +267,7 @@ async function readPhotoRows(env, includeAll = false) {
         profileId: row.profile_id,
         runAt: row.run_at,
         createdAt: row.created_at,
-        body: row.body_json ? JSON.parse(row.body_json) : {},
+        body: row.body_json ? normalizeBodyMedia(env, JSON.parse(row.body_json)) : {},
         status: row.status || "QUEUED",
         postedAt: row.posted_at || null,
         lastError: row.last_error || ""
@@ -226,7 +276,8 @@ async function readPhotoRows(env, includeAll = false) {
 
 async function upsertPhotoRow(env, item) {
     await ensurePhotoTable(env);
-    const bodyJson = JSON.stringify(item.body || {});
+    const normalizedBody = normalizeBodyMedia(env, item.body || {});
+    const bodyJson = JSON.stringify(normalizedBody);
     await env.D1_DB.prepare(
             `
     INSERT INTO scheduled_photos (id, profile_id, run_at, created_at, body_json, status, posted_at, last_error)
@@ -293,7 +344,7 @@ export async function enqueueScheduledPhoto(env, payload) {
         runAt,
         createdAt: new Date().toISOString(),
         profileId: payload.profileId,
-        body: payload.body || {},
+        body: normalizeBodyMedia(env, payload.body || {}),
         status: "QUEUED"
     };
     await upsertPhotoRow(env, item);
@@ -310,7 +361,7 @@ export async function saveScheduledPhotos(env, list) {
             profileId: item.profileId,
             runAt: item.runAt,
             createdAt: item.createdAt || new Date().toISOString(),
-            body: item.body || {},
+            body: normalizeBodyMedia(env, item.body || {}),
             status: item.status || "QUEUED"
         });
     }
@@ -329,7 +380,7 @@ export async function commitScheduledPosts(env, items) {
             runAt: new Date(it.runAt).toISOString(),
             createdAt: it.createdAt || new Date().toISOString(),
             profileId: it.profileId,
-            body: it.body || {},
+            body: normalizeBodyMedia(env, it.body || {}),
             status: it.status || "QUEUED"
         }))
         .filter((it) => it.profileId && it.runAt) : [];
@@ -423,18 +474,48 @@ async function buildTemplatePost(env, profile, overrides = {}, basics = {}) {
         `${city ? city + " • " : ""}${keywords.slice(0, 3).join(" · ")}` :
         `${city || "Local"} • ${primaryKw}`;
     lines.push(keywordLine);
-    lines.push(`Expert ${primaryKw} in ${city || "your area"}.`);
+
+    const business = profile.businessName || primaryKw;
+    const serviceLower = primaryKw.toLowerCase();
+    const templateCtx = {
+        business,
+        city: city || "your area",
+        service: primaryKw,
+        serviceLower,
+        serviceVerb: serviceLower
+    };
+
+    const introTemplate = pickTemplateValue(INTRO_TEMPLATES, profile.profileId, `intro:${idx}`);
+    if (introTemplate) {
+        lines.push(formatTemplate(introTemplate, templateCtx));
+    }
+
+    const templateList = TEMPLATE_MESSAGES[template] || TEMPLATE_MESSAGES.default;
+    const messageTemplate = pickTemplateValue(templateList, profile.profileId, `message:${idx}`);
+    if (messageTemplate) {
+        lines.push(formatTemplate(messageTemplate, templateCtx));
+    }
+
+    const detailOne = pickTemplateValue(DETAIL_OPTIONS_ONE, profile.profileId, `detail1:${idx}`);
+    const detailTwo = pickTemplateValue(DETAIL_OPTIONS_TWO, profile.profileId, `detail2:${idx}`);
+    const differentiatorTemplate = pickTemplateValue(
+        DIFFERENTIATOR_TEMPLATES,
+        profile.profileId,
+        `diff:${idx}`
+    );
+    if (differentiatorTemplate) {
+        lines.push(
+            formatTemplate(differentiatorTemplate, {
+                ...templateCtx,
+                detailOne,
+                detailTwo
+            })
+        );
+    }
+
     if (template === "OFFER" && overrides.offerTitle) {
         lines.push(`Special: ${overrides.offerTitle}`);
-    } else if (template === "SOCIAL_PROOF") {
-        lines.push("Clients trust us for reliable, fast results.");
-    } else if (template === "TIP") {
-        lines.push(`Tip: regular ${primaryKw.toLowerCase()} keeps your property in shape.`);
-    } else {
-        lines.push(`Need help with ${primaryKw.toLowerCase()}? We're ready.`);
     }
-    const quickLinks = buildQuickLinkLines(defaults);
-    (quickLinks || []).forEach((line) => lines.push(line));
     if (prevUrl) {
         lines.push(`Previous update: ${prevUrl}`);
     }
@@ -472,7 +553,7 @@ export async function getCycleStateForProfile(env, profileId = "") {
     return {...entry, nextTemplate };
 }
 
-function buildQuickLinkLines(defaults = {}) {
+export function buildQuickLinkLines(defaults = {}) {
     const quickLinks = [
         { label: "Reviews ►", url: defaults ? defaults.reviewLink : "" },
         { label: "Service Area ►", url: defaults ? defaults.serviceAreaLink : "" },
@@ -486,7 +567,114 @@ function buildQuickLinkLines(defaults = {}) {
         .filter(Boolean);
 }
 
-async function composeAiTemplatePost(env, profile, overrides = {}, basics = {}) {
+export function insertQuickLinksBeforeHashtags(text = "", quickLines = []) {
+    const base = typeof text === "string" ? text : "";
+    const normalizedQuick = (quickLines || []).map((ql) => String(ql || "").trim()).filter(Boolean);
+    if (!base && !normalizedQuick.length) return base;
+    if (!normalizedQuick.length) return base;
+    const lines = base ? base.split("\n") : [];
+    const alreadyIncluded = normalizedQuick.every((ql) =>
+        lines.some((line) => line.trim() === ql)
+    );
+    if (alreadyIncluded) return base;
+    let hashtagStart = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const trimmed = lines[i].trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("#")) {
+            hashtagStart = i;
+            continue;
+        }
+        break;
+    }
+    const before = hashtagStart === -1 ? lines : lines.slice(0, hashtagStart);
+    const hashtags = hashtagStart === -1 ? [] : lines.slice(hashtagStart);
+    const result = [];
+    if (before.length) {
+        result.push(...before);
+    }
+    if (result.length && result[result.length - 1].trim()) {
+        result.push("");
+    }
+    result.push(...normalizedQuick);
+    if (hashtags.length) {
+        if (normalizedQuick[normalizedQuick.length - 1]?.trim() && hashtags[0]?.trim()) {
+            result.push("");
+        }
+        result.push(...hashtags);
+    }
+    return result.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function hashString(str = "") {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = (hash << 5) - hash + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return hash;
+}
+
+function pickTemplateValue(list = [], profileId = "", seed = "") {
+    if (!Array.isArray(list) || list.length === 0) return "";
+    const hash = Math.abs(hashString(`${profileId}:${seed}`));
+    return list[hash % list.length];
+}
+
+function formatTemplate(template = "", ctx = {}) {
+    return template.replace(/\{(\w+)\}/g, (_match, key) => {
+        return ctx[key] != null ? ctx[key] : "";
+    });
+}
+
+const INTRO_TEMPLATES = [
+    "{business} keeps {city} homes confident about {serviceLower}.",
+    "{city} locals trust {business} when {serviceVerb} matters.",
+    "From {city} to nearby neighbourhoods, {business} handles {serviceLower}.",
+    "{business} delivers {serviceLower} that matches {city}'s pace."
+];
+
+const DIFFERENTIATOR_TEMPLATES = [
+    "Every project includes {detailOne} and {detailTwo}.",
+    "Expect clear timelines, {detailOne}, and {detailTwo}.",
+    "{business} pairs skilled crews with {detailTwo}.",
+    "Quick response, {detailOne}, and personal updates every step."
+];
+
+const DETAIL_OPTIONS_ONE = [
+    "dust-controlled cleanup",
+    "site protection",
+    "respectful crews",
+    "budget-friendly plans"
+];
+
+const DETAIL_OPTIONS_TWO = [
+    "daily progress texts",
+    "local permitting guidance",
+    "finish-quality walk-throughs",
+    "after-service check-ins"
+];
+
+const TEMPLATE_MESSAGES = {
+    OFFER: [
+        "Limited-time offer ready now—ask us to lock it in for {city}.",
+        "{business} lined up a savings window for {serviceLower} this week."
+    ],
+    SOCIAL_PROOF: [
+        "Neighbour referrals power most of our {serviceLower} work in {city}.",
+        "Clients in {city} say {business} is their go-to for {serviceLower}."
+    ],
+    TIP: [
+        "Pro tip: consistent {serviceLower} keeps {city} properties sharp.",
+        "Reminder from {business}: schedule {serviceLower} before busy season hits {city}."
+    ],
+    default: [
+        "Need a hand with {serviceLower}? {business} is ready.",
+        "{business} handles last-minute {serviceLower} so you can relax."
+    ]
+};
+
+export async function composeAiTemplatePost(env, profile, overrides = {}, basics = {}) {
     const tpl = await buildTemplatePost(env, profile, overrides, basics);
     const neighbourhood = pickNeighbourhood(profile);
     let aiSummary = "";
@@ -536,16 +724,20 @@ async function composeAiTemplatePost(env, profile, overrides = {}, basics = {}) 
 export async function enqueueScheduledBulk(env, payload) {
     const { profileId, images = [], startAt, cadenceDays = 1, body = {}, autoGenerateSummary = false } = payload || {};
     if (!profileId) throw new Error("Missing profileId");
-    if (!Array.isArray(images) || !images.length) throw new Error("No images provided");
+    const sanitizedImages = (Array.isArray(images) ? images : [])
+        .map((url) => ensureAbsoluteMediaUrl(env, url))
+        .filter(Boolean);
+    if (!sanitizedImages.length) throw new Error("No images provided");
+    const normalizedBody = normalizeBodyMedia(env, body);
     const runStart = startAt ? new Date(startAt) : new Date(Date.now() + 3_600_000);
     if (isNaN(runStart.getTime())) throw new Error("Invalid startAt");
     const items = [];
-    images.forEach((mediaUrl, idx) => {
+    sanitizedImages.forEach((mediaUrl, idx) => {
         const runAt = new Date(runStart.getTime() + idx * cadenceDays * 86400000).toISOString();
         items.push({
             profileId,
             runAt,
-            body: {...body, mediaUrl, autoGenerateSummary },
+            body: {...normalizedBody, mediaUrl, autoGenerateSummary },
         });
     });
     const existing = await getScheduledPosts(env);
@@ -563,21 +755,25 @@ export async function enqueueScheduledBulk(env, payload) {
 export async function draftScheduledBulk(env, payload) {
     const { profileId, images = [], startAt, cadenceDays = 1, body = {}, autoGenerateSummary = false } = payload || {};
     if (!profileId) throw new Error("Missing profileId");
-    if (!Array.isArray(images) || !images.length) throw new Error("No images provided");
+    const sanitizedImages = (Array.isArray(images) ? images : [])
+        .map((url) => ensureAbsoluteMediaUrl(env, url))
+        .filter(Boolean);
+    if (!sanitizedImages.length) throw new Error("No images provided");
+    const overrides = normalizeBodyMedia(env, body);
     const runStart = startAt ? new Date(startAt) : new Date(Date.now() + 3_600_000);
     if (isNaN(runStart.getTime())) throw new Error("Invalid startAt");
     const profileList = await getProfiles(env);
     const profile = profileList.find((p) => p.profileId === profileId);
     const drafts = [];
-    for (let idx = 0; idx < images.length; idx++) {
-        const mediaUrl = images[idx];
+    for (let idx = 0; idx < sanitizedImages.length; idx++) {
+        const mediaUrl = sanitizedImages[idx];
         const runAt = new Date(runStart.getTime() + idx * cadenceDays * 86400000).toISOString();
-        let postText = body.postText || "";
-        let cta = body.cta || "";
-        let linkUrl = body.linkUrl || "";
+        let postText = overrides.postText || "";
+        let cta = overrides.cta || "";
+        let linkUrl = overrides.linkUrl || "";
         if ((!postText || autoGenerateSummary) && profile) {
             const basics = await fetchLocationBasics(env, profile);
-            const built = await composeAiTemplatePost(env, profile, body || {}, basics);
+            const built = await composeAiTemplatePost(env, profile, overrides || {}, basics);
             const tagLine = (built.hashtags || []).join(" ");
             postText = (built.summary || "").trim();
             if (tagLine && postText.length + tagLine.length + 2 <= 1500) {
@@ -588,29 +784,13 @@ export async function draftScheduledBulk(env, payload) {
         }
         if (profile) {
             const quickLines = buildQuickLinkLines(profile.defaults);
-            if (quickLines && quickLines.length) {
-                const parts = (postText || "").split(/\n+/);
-                const alreadyIncluded = quickLines.every((ql) =>
-                    parts.some((l) => l.trim() === ql.trim())
-                );
-                if (!alreadyIncluded) {
-                    const prevIdx = parts.findIndex((l) => /^previous update:/i.test(l));
-                    if (prevIdx !== -1) {
-                        const before = parts.slice(0, prevIdx);
-                        const after = parts.slice(prevIdx);
-                        postText = [...before, ...quickLines, ...after].join("\n").trim();
-                    } else {
-                        const spacer = postText ? "\n\n" : "";
-                        postText = (postText + spacer + quickLines.join("\n")).trim();
-                    }
-                }
-            }
+            postText = insertQuickLinksBeforeHashtags(postText, quickLines);
         }
         drafts.push({
             id: crypto.randomUUID(),
             runAt,
             profileId,
-            body: {...body, mediaUrl, postText, autoGenerateSummary, cta, linkUrl },
+            body: {...overrides, mediaUrl, postText, autoGenerateSummary, cta, linkUrl },
         });
     }
     return drafts;
@@ -627,16 +807,19 @@ export async function appendPhotosToProfile(env, profileId, items = []) {
         items
         .map((it) => {
             if (!it) return null;
-            if (typeof it === "string") {
-                return { url: String(it).trim(), serviceType: "", captions: [], addedAt: new Date().toISOString() };
-            }
-            const url = String(it.url || "").trim();
-            if (!/^https?:\/\//i.test(url)) return null;
+            const entry = typeof it === "string" ? {
+                url: String(it).trim(),
+                serviceType: "",
+                captions: [],
+                addedAt: new Date().toISOString()
+            } : {...it };
+            const fullUrl = ensureAbsoluteMediaUrl(env, entry.url || "");
+            if (!/^https?:\/\//i.test(fullUrl)) return null;
             return {
-                url,
-                serviceType: String(it.serviceType || ""),
-                captions: Array.isArray(it.captions) ? it.captions.slice(0, 5) : [],
-                addedAt: it.addedAt || new Date().toISOString()
+                url: fullUrl,
+                serviceType: String(entry.serviceType || ""),
+                captions: Array.isArray(entry.captions) ? entry.captions.slice(0, 5) : [],
+                addedAt: entry.addedAt || new Date().toISOString()
             };
         })
         .filter(Boolean) : [];
@@ -654,30 +837,45 @@ export async function fetchLocationBasics(env, profile) {
     if (!profile) return out;
     const accountId = String(profile.accountId || "");
     const locationId = String(profile.locationId || "");
-    if (!accountId || !locationId) return out;
+    if (!locationId) return out;
 
-    const url =
-        "https://mybusinessbusinessinformation.googleapis.com/v1/accounts/" +
-        accountId +
-        "/locations/" +
-        locationId +
-        "?readMask=websiteUri,phoneNumbers,metadata";
+    const base = "https://mybusinessbusinessinformation.googleapis.com/v1";
+    const readMask = "websiteUri,phoneNumbers,metadata";
+    const urls = [];
+    if (accountId) {
+        urls.push(
+            `${base}/accounts/${accountId}/locations/${locationId}?readMask=${readMask}`
+        );
+    }
+    urls.push(`${base}/locations/${locationId}?readMask=${readMask}`);
 
-    try {
-        const resp = await callBusinessProfileAPI(env, "GET", url);
-        const data = resp && resp.data ? resp.data : {};
-        out.websiteUri = data.websiteUri || "";
+    const parseBasics = (data) => {
+        const next = {...out };
+        next.websiteUri = data.websiteUri || "";
         if (data.phoneNumbers && data.phoneNumbers.primaryPhone) {
-            out.primaryPhone = String(data.phoneNumbers.primaryPhone);
+            next.primaryPhone = String(data.phoneNumbers.primaryPhone);
         }
         const meta = data.metadata || {};
-        out.mapsUri = meta.mapsUri || "";
-        out.placeReviewUri = meta.placeReviewUri || "";
-        return out;
-    } catch (e) {
-        console.error("fetchLocationBasics error:", e);
-        return out;
+        next.mapsUri = meta.mapsUri || "";
+        next.placeReviewUri = meta.placeReviewUri || "";
+        return next;
+    };
+
+    for (const url of urls) {
+        try {
+            const resp = await callBusinessProfileAPI(env, "GET", url);
+            const data = resp && resp.data ? resp.data : {};
+            return parseBasics(data);
+        } catch (e) {
+            const msg = String(e && e.message ? e.message : e);
+            const is404 = /404/.test(msg);
+            const logFn = is404 ? console.warn : console.error;
+            logFn("fetchLocationBasics error:", msg);
+            if (!is404) break;
+            // Try the next fallback URL when we specifically get a 404/not found.
+        }
     }
+    return out;
 }
 
 // CTA helpers
@@ -778,17 +976,71 @@ function isHttpsImage(url) {
     return typeof url === "string" && /^https:\/\/.+\.(png|jpe?g|webp)$/i.test(url);
 }
 
-function resolveMediaUrl(env, mediaUrlRaw) {
-    const url = String(mediaUrlRaw || "").trim();
-    if (!url) throw new Error("Missing mediaUrl");
-    if (/^https?:\/\//i.test(url)) return url;
-    const base = env.PUBLIC_BASE_URL || env.PUBLIC_MEDIA_BASE || "";
-    if (!base) {
-        throw new Error("mediaUrl must be https://... or set PUBLIC_BASE_URL to prefix /uploads files");
+function getMediaBase(env) {
+    const base =
+        env &&
+        (env.PUBLIC_BASE_URL ||
+            env.PUBLIC_MEDIA_BASE ||
+            env.MEDIA_BASE_URL ||
+            env.BACKEND_BASE_URL ||
+            DEFAULT_MEDIA_BASE);
+    const cleaned = base ? String(base).replace(/\/+$/, "") : "";
+    // debug log (temporary): show which base is used when resolving media
+    console.log("getMediaBase ->", { candidateBase: base, cleanedBase: cleaned });
+    return cleaned;
+}
+
+export function ensureAbsoluteMediaUrl(env, value, options = {}) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (/^https?:\/\//i.test(raw)) {
+        // already absolute
+        return raw;
     }
-    const cleanedBase = base.replace(/\/+$/, "");
-    const cleanedPath = url.startsWith("/") ? url : "/" + url;
-    return cleanedBase + cleanedPath;
+    const path = raw.startsWith("/") ? raw : "/" + raw;
+    const base = getMediaBase(env);
+    const result = base ? base + path : (options && options.allowRelativeFallback === false ? raw : path);
+    // debug log (temporary): show input -> output so we can spot where prefix is missing
+    console.log("ensureAbsoluteMediaUrl ->", {
+        rawInput: raw,
+        path,
+        base,
+        result,
+        allowRelativeFallback: !!(options && options.allowRelativeFallback)
+    });
+    return result;
+}
+
+function normalizeBodyMedia(env, body = {}) {
+    if (!body || typeof body !== "object") return {};
+    const out = {...body };
+    if (out.mediaUrl) out.mediaUrl = ensureAbsoluteMediaUrl(env, out.mediaUrl);
+    if (out.overlayUrl) out.overlayUrl = ensureAbsoluteMediaUrl(env, out.overlayUrl);
+    return out;
+}
+
+function resolveMediaUrl(env, mediaUrlRaw) {
+    const raw = String(mediaUrlRaw || "").trim();
+    if (!raw) throw new Error("Missing mediaUrl");
+    const url = ensureAbsoluteMediaUrl(env, raw, { allowRelativeFallback: false });
+    if (/^https?:\/\//i.test(url)) return url;
+    throw new Error("mediaUrl must be https://... or set PUBLIC_BASE_URL/PUBLIC_MEDIA_BASE to prefix /uploads files");
+}
+
+function resolveMediaUrlForPost(env, mediaUrlRaw) {
+    const raw = String(mediaUrlRaw || "").trim();
+    if (!raw) return "";
+    try {
+        const full = ensureAbsoluteMediaUrl(env, raw);
+        return isHttpsImage(full) ? full : "";
+    } catch (err) {
+        console.warn(
+            "resolveMediaUrlForPost failed:",
+            raw,
+            err && err.message ? err.message : err
+        );
+        return "";
+    }
 }
 
 async function callMediaApi(env, path, method = "GET", body = null) {
@@ -955,6 +1207,10 @@ export async function postToGmb(env, body) {
         linkOverride = built.site || null;
     }
 
+    const defaults = (profile && profile.defaults) || {};
+    const quickLines = buildQuickLinkLines(defaults);
+    summary = insertQuickLinksBeforeHashtags(summary, quickLines);
+
     if (hashtags.length) {
         const spaceLeft = 1450 - summary.length;
         if (spaceLeft > 20) {
@@ -967,7 +1223,6 @@ export async function postToGmb(env, body) {
 
     if (summary.length > 1500) summary = summary.slice(0, 1500);
 
-    const defaults = (profile && profile.defaults) || {};
     const ctaCode = (body && body.cta) || ctaFromTemplate || defaults.cta || "LEARN_MORE";
     let linkUrl =
         (body && body.linkUrl) ||
@@ -976,13 +1231,12 @@ export async function postToGmb(env, body) {
         basics.websiteUri ||
         profile.landingUrl ||
         "";
-    const overlayUsed = (body && body.overlayUrl) || "";
+    const overlayUsed = ensureAbsoluteMediaUrl(env, (body && body.overlayUrl) || "");
     const phoneOverride = (body && body.phone) || defaults.phone || "";
     const providedLinkUrl = linkUrl;
     const siteCandidate = basics.websiteUri || profile.landingUrl || "";
-    let mediaUrlRaw = (body && body.mediaUrl) || defaults.mediaUrl || "";
+    let mediaUrlRaw = ensureAbsoluteMediaUrl(env, (body && body.mediaUrl) || defaults.mediaUrl || "");
     let usedFromPool = false;
-    let usedPoolEntry = null;
 
     const ctaObj = buildCallToAction(ctaCode, linkUrl, basics, profile, phoneOverride);
     // Safety: CALL should never include a url to satisfy GBP validation
@@ -1079,10 +1333,10 @@ export async function postToGmb(env, body) {
         const url = candidate && typeof candidate === "object" ? candidate.url : candidate;
         const serviceType = candidate && typeof candidate === "object" ? candidate.serviceType : "";
         const captions = candidate && typeof candidate === "object" ? candidate.captions : [];
-        if (isHttpsImage(url)) {
-            mediaUrlRaw = url;
+        const normalizedPoolUrl = ensureAbsoluteMediaUrl(env, url || "");
+        if (isHttpsImage(normalizedPoolUrl)) {
+            mediaUrlRaw = normalizedPoolUrl;
             usedFromPool = true;
-            usedPoolEntry = { url, serviceType, captions };
             // If a caption exists, prefer the first as post text when none supplied
             if (!summary && captions && captions.length) {
                 summary = captions[0];
@@ -1093,9 +1347,10 @@ export async function postToGmb(env, body) {
         }
     }
 
-    if (mediaUrlRaw && isHttpsImage(mediaUrlRaw)) {
-        payload.media = [{ mediaFormat: "PHOTO", sourceUrl: mediaUrlRaw }];
-        usedImageUrl = mediaUrlRaw;
+    const resolvedMediaUrl = resolveMediaUrlForPost(env, mediaUrlRaw);
+    if (resolvedMediaUrl) {
+        payload.media = [{ mediaFormat: "PHOTO", sourceUrl: resolvedMediaUrl }];
+        usedImageUrl = resolvedMediaUrl;
     }
 
     const extractPostedUrl = (result) => {
@@ -1347,7 +1602,7 @@ export async function enqueueScheduledPost(env, payload) {
         runAt,
         createdAt: new Date().toISOString(),
         profileId: payload.profileId,
-        body: payload.body || {},
+        body: normalizeBodyMedia(env, payload.body || {}),
         status: "QUEUED"
     };
     await upsertScheduledRow(env, item);
@@ -1362,7 +1617,7 @@ export async function updateScheduledPost(env, id, updates) {
     const updated = {
         ...current,
         runAt,
-        body: updates.body || current.body,
+        body: updates.body ? normalizeBodyMedia(env, updates.body) : current.body,
         status: current.status || "QUEUED"
     };
     await upsertScheduledRow(env, updated);
@@ -1388,9 +1643,11 @@ export async function scheduledTick(env) {
             try {
                 const profile = profiles.find((p) => p && p.profileId === item.profileId);
                 if (!profile) throw new Error("Profile not found for scheduled photo");
+                const photoMediaUrl = ensureAbsoluteMediaUrl(env, item.body?.mediaUrl || "");
+                if (!photoMediaUrl) throw new Error("Scheduled photo missing mediaUrl");
                 const body = {
                     profileId: item.profileId,
-                    mediaUrl: item.body?.mediaUrl || "",
+                    mediaUrl: photoMediaUrl,
                     caption: item.body?.caption || ""
                 };
                 await uploadPhotoToGmb(env, profile, body);
@@ -1409,7 +1666,8 @@ export async function scheduledTick(env) {
         if (due && due <= nowMs && item.profileId) {
             try {
                 const profile = profiles.find((p) => p.profileId === item.profileId);
-                const body = { profileId: item.profileId, ...(item.body || {}) };
+                const normalizedBody = normalizeBodyMedia(env, item.body || {});
+                const body = { profileId: item.profileId, ...normalizedBody };
                 const res = await postToGmb(env, body);
                 const postedUrl = (res && res.postedUrl) || "";
                 console.log("[scheduled-post] Posted queued item", item.id, "for", item.profileId);
