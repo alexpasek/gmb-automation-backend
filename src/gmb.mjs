@@ -835,19 +835,25 @@ export async function appendPhotosToProfile(env, profileId, items = []) {
 export async function fetchLocationBasics(env, profile) {
     const out = { websiteUri: "", primaryPhone: "", mapsUri: "", placeReviewUri: "" };
     if (!profile) return out;
-    const accountId = String(profile.accountId || "");
     const locationId = String(profile.locationId || "");
     if (!locationId) return out;
 
+    const normalizeLocationPath = (id) => {
+        const str = String(id || "").trim();
+        if (!str) return "";
+        const match = str.match(/locations\/(.+)$/i);
+        if (match) {
+            return `locations/${match[1]}`;
+        }
+        return `locations/${str}`;
+    };
+
+    const locationPath = normalizeLocationPath(locationId);
+    if (!locationPath) return out;
+
     const base = "https://mybusinessbusinessinformation.googleapis.com/v1";
     const readMask = "websiteUri,phoneNumbers,metadata";
-    const urls = [];
-    if (accountId) {
-        urls.push(
-            `${base}/accounts/${accountId}/locations/${locationId}?readMask=${readMask}`
-        );
-    }
-    urls.push(`${base}/locations/${locationId}?readMask=${readMask}`);
+    const url = `${base}/${locationPath}?readMask=${readMask}`;
 
     const parseBasics = (data) => {
         const next = {...out };
@@ -861,21 +867,17 @@ export async function fetchLocationBasics(env, profile) {
         return next;
     };
 
-    for (const url of urls) {
-        try {
-            const resp = await callBusinessProfileAPI(env, "GET", url);
-            const data = resp && resp.data ? resp.data : {};
-            return parseBasics(data);
-        } catch (e) {
-            const msg = String(e && e.message ? e.message : e);
-            const is404 = /404/.test(msg);
-            const logFn = is404 ? console.warn : console.error;
-            logFn("fetchLocationBasics error:", msg);
-            if (!is404) break;
-            // Try the next fallback URL when we specifically get a 404/not found.
-        }
+    try {
+        const resp = await callBusinessProfileAPI(env, "GET", url);
+        const data = resp && resp.data ? resp.data : {};
+        return parseBasics(data);
+    } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        const is404 = /404/.test(msg);
+        const logFn = is404 ? console.warn : console.error;
+        logFn("fetchLocationBasics error:", msg);
+        return out;
     }
-    return out;
 }
 
 // CTA helpers

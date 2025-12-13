@@ -1,6 +1,50 @@
+const CALGARY_PROFILE_IDS = new Set(["profile-12776391010876572728"]);
+const CALGARY_LOCATION_IDS = new Set(["17858941291685902823"]);
+const CALGARY_NAME_KEYWORDS = ["popcorn ceiling removal calgary"];
+const CALGARY_URL_KEYWORDS = ["popcornceilingremovalcalgary.com"];
+
+function isCalgaryFocusProfile(profile = {}) {
+    const profileId = String(profile.profileId || "").toLowerCase();
+    const locationId = String(profile.locationId || "").toLowerCase();
+    const storeCode = String(profile.storeCode || "").toLowerCase();
+    if (CALGARY_PROFILE_IDS.has(profileId)) return true;
+    if (CALGARY_LOCATION_IDS.has(locationId)) return true;
+    if (storeCode && CALGARY_PROFILE_IDS.has(`profile-${storeCode}`)) return true;
+
+    const businessName = String(profile.businessName || "").toLowerCase();
+    if (CALGARY_NAME_KEYWORDS.some((kw) => businessName.includes(kw))) {
+        return true;
+    }
+
+    const landingUrl = String(profile.landingUrl || "").toLowerCase();
+    const defaults = profile && profile.defaults ? profile.defaults : {};
+    const defaultLink = String(defaults.linkUrl || "").toLowerCase();
+    const urls = [landingUrl, defaultLink];
+    if (urls.some((url) => CALGARY_URL_KEYWORDS.some((kw) => url.includes(kw)))) {
+        return true;
+    }
+
+    return false;
+}
+
+function buildCityContext(profile) {
+    const p = profile || {};
+    const rawCity = typeof p.city === "string" ? p.city.trim() : "";
+    const forceCalgary = isCalgaryFocusProfile(p);
+    const focusCity = forceCalgary ? "Calgary" : rawCity;
+    return {
+        rawCity,
+        focusCity,
+        forceCalgary
+    };
+}
+
 export function pickNeighbourhood(profile) {
     const p = profile || {};
-    const city = typeof p.city === "string" ? p.city : "";
+    const cityCtx = buildCityContext(p);
+    const special = !!cityCtx.forceCalgary;
+    const city = cityCtx.focusCity || cityCtx.rawCity || "";
+    const rawCity = cityCtx.rawCity || "";
     const cityLower = city.toLowerCase();
     const arr = Array.isArray(p.neighbourhoods) ? p.neighbourhoods : [];
 
@@ -37,22 +81,48 @@ export function pickNeighbourhood(profile) {
     ];
 
     const merged = [];
+    const calgaryPool = [];
     const seen = new Set();
-    const pushIfNew = (val) => {
+    const pushIfNew = (val, source = "profile") => {
         const v = String(val || "").trim();
         if (!v || seen.has(v.toLowerCase())) return;
         seen.add(v.toLowerCase());
         merged.push(v);
+        if (source === "calgary") {
+            calgaryPool.push(v);
+        }
     };
 
     arr.forEach(pushIfNew);
     if (cityLower.includes("calgary")) {
-        calgaryDefaults.forEach(pushIfNew);
+        calgaryDefaults.forEach((val) => pushIfNew(val, "calgary"));
     }
 
-    if (!merged.length) return city;
-    const useCityOnly = Math.random() < 0.5 && city; // bias to keep Calgary visible
-    if (useCityOnly) return city;
+    if (!merged.length) {
+        if (special && city && rawCity && city !== rawCity && Math.random() < 0.5) {
+            return `${city} & ${rawCity}`;
+        }
+        return city || rawCity;
+    }
+
+    if (special) {
+        const useCityOnly = Math.random() < 0.45 && city;
+        if (useCityOnly) {
+            if (rawCity && city !== rawCity && Math.random() < 0.6) {
+                return `${city} & ${rawCity}`;
+            }
+            return city;
+        }
+
+        if (cityLower.includes("calgary") && calgaryPool.length && Math.random() < 0.7) {
+            const calIdx = Math.floor(Math.random() * calgaryPool.length);
+            return calgaryPool[calIdx];
+        }
+    } else {
+        const useCityOnly = Math.random() < 0.5 && city;
+        if (useCityOnly) return city;
+    }
+
     const idx = Math.floor(Math.random() * merged.length);
     return merged[idx];
 }
@@ -69,6 +139,89 @@ export function safeJoinHashtags(arr, maxChars) {
         out = candidate;
     }
     return out;
+}
+
+function dedupeStrings(list = []) {
+    const out = [];
+    const seen = new Set();
+    list.forEach((item) => {
+        const str = String(item || "").trim();
+        if (!str) return;
+        const key = str.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(str);
+    });
+    return out;
+}
+
+function formatHashtagLabel(label) {
+    const trimmed = String(label || "").trim();
+    if (!trimmed) return "";
+    const parts = trimmed
+        .replace(/#/g, " ")
+        .split(/[\s,\/|&-]+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+    if (!parts.length) return "";
+    const normalized = parts
+        .map((part) => {
+            if (!part) return "";
+            if (part.length <= 3) return part.toUpperCase();
+            return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+        })
+        .join("")
+        .replace(/[^A-Za-z0-9]/g, "");
+    if (!normalized) return "";
+    return "#" + normalized;
+}
+
+function boostLocationHashtags(existing, cityCtx, neighbourhood) {
+    const base = Array.isArray(existing) ? existing.slice() : [];
+    if (!cityCtx || !cityCtx.forceCalgary) {
+        return base;
+    }
+    const prioritized = [];
+    const seen = new Set();
+
+    base.forEach((tag) => {
+        const str = String(tag || "").trim();
+        if (!str) return;
+        seen.add(str.toLowerCase());
+    });
+
+    const addTag = (tag) => {
+        const clean = String(tag || "").trim();
+        if (!clean) return;
+        const lower = clean.toLowerCase();
+        if (seen.has(lower)) return;
+        seen.add(lower);
+        prioritized.push(clean);
+    };
+
+    const focusCity = (cityCtx && cityCtx.focusCity) || "";
+    const rawCity = (cityCtx && cityCtx.rawCity) || "";
+    const focusLower = focusCity.toLowerCase();
+
+    if (focusLower === "calgary") {
+        addTag("#Calgary");
+        addTag("#YYCHomes");
+    } else {
+        addTag(formatHashtagLabel(focusCity));
+    }
+
+    if (rawCity && focusCity && rawCity.toLowerCase() !== focusLower) {
+        addTag(formatHashtagLabel(rawCity));
+    }
+
+    if (neighbourhood) {
+        addTag(formatHashtagLabel(neighbourhood));
+        if (focusLower === "calgary") {
+            addTag(formatHashtagLabel(`${neighbourhood} Calgary`));
+        }
+    }
+
+    return [...prioritized.filter(Boolean), ...base];
 }
 
 function parseJsonResponse(text) {
@@ -90,23 +243,69 @@ function parseJsonResponse(text) {
 }
 
 export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) {
-    const city = (profile && profile.city) || "";
+    const cityCtx = buildCityContext(profile);
+    const city = cityCtx.focusCity || cityCtx.rawCity || "";
+    const rawCity = cityCtx.rawCity || "";
+    const special = !!cityCtx.forceCalgary;
     const businessName = (profile && profile.businessName) || "";
     const keywords = Array.isArray(profile && profile.keywords) ?
         profile.keywords : [];
     const kwLine = keywords.join(", ");
 
     const area = neighbourhood || "";
-    const whereOptions = area ? [
-        area + ", " + city,
-        "the " + area + " area of " + city,
-        area + " in " + city,
-        city + " — including " + area,
-        area + " and nearby " + city,
-        area + " / " + city
-    ] : [city];
-    const where =
-        whereOptions[Math.floor(Math.random() * whereOptions.length)] || city;
+    let where = "";
+
+    if (special) {
+        const primaryCity = city || rawCity;
+        const secondaryCity =
+            city && rawCity && city.toLowerCase() !== rawCity.toLowerCase() ? rawCity : "";
+        const whereSeeds = [];
+
+        if (area && primaryCity) {
+            whereSeeds.push(
+                `${area}, ${primaryCity}`,
+                `${primaryCity} — including ${area}`,
+                `${area} in ${primaryCity}`,
+                `${area} and nearby ${primaryCity}`,
+                `${primaryCity}'s ${area} homes`
+            );
+        } else if (area) {
+            whereSeeds.push(area);
+        }
+
+        if (area && secondaryCity && primaryCity) {
+            whereSeeds.push(`${area} between ${primaryCity} & ${secondaryCity}`);
+        }
+
+        if (primaryCity && secondaryCity) {
+            whereSeeds.push(
+                `${primaryCity} & ${secondaryCity}`,
+                `${primaryCity} / ${secondaryCity}`
+            );
+        } else if (primaryCity) {
+            whereSeeds.push(primaryCity);
+        }
+
+        const whereOptions = dedupeStrings(whereSeeds);
+        const fallbackWhere = primaryCity || rawCity || "Calgary area";
+        where =
+            whereOptions[Math.floor(Math.random() * whereOptions.length)] || fallbackWhere;
+    } else {
+        const baseCity = city || rawCity;
+        const whereOptions = area && baseCity ? [
+            `${area}, ${baseCity}`,
+            `the ${area} area of ${baseCity}`,
+            `${area} in ${baseCity}`,
+            `${baseCity} — including ${area}`,
+            `${area} and nearby ${baseCity}`,
+            `${area} / ${baseCity}`
+        ] : area ? [area] : [baseCity];
+        where =
+            whereOptions[Math.floor(Math.random() * whereOptions.length)] ||
+            baseCity ||
+            area ||
+            "";
+    }
 
     const tones = [
         "friendly and helpful",
@@ -355,7 +554,7 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         if (h[0] !== "#") h = "#" + h.replace(/^#+/, "");
         cleaned.push(h);
     }
-    hashtags = cleaned;
+    hashtags = boostLocationHashtags(cleaned, cityCtx, neighbourhood || "");
 
     return { summary, hashtags };
 }

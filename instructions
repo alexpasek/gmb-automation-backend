@@ -2,6 +2,9 @@
 step 1 http://127.0.0.1:8787/accounts
 step 2 find all accounts under taras bulba http://127.0.0.1:8787/locations?accountId=116118369255335894193, 
 
+frobrowser on clowflare
+
+https://gmb-automation-backend.webtoronto22.workers.dev/locations?accountId=116118369255335894193
 add all info to profiles 
 curl -X POST "http://127.0.0.1:8787/profiles/sync-from-google" \
   -H "Content-Type: application/json" \
