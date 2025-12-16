@@ -4,6 +4,8 @@ compatibility_date = "2025-01-01"
 
 [vars]
 POST_ATTACH_MEDIA = "true"
+AUTO_SCHEDULER_ENABLED = "true"
+AUTO_SCHEDULER_PER_TICK = "2"
 
 [[d1_databases]]
 binding = "D1_DB"
@@ -11,7 +13,7 @@ database_name = "gmb_automation"
 database_id = "10cb08e3-b625-430f-b1e6-a86a1c1dc253"
 
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/5 * * * *"]
 
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"

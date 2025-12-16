@@ -12,6 +12,8 @@ const DEFAULT_SCHED = {
     perProfileIntervalDays: {},
     perProfileCadence: {}
 };
+const AUTO_QUEUE_KEY = "autoSchedulerQueue";
+const DEFAULT_AUTO_PER_TICK = 2;
 
 const TEMPLATE_CYCLE = ["SERVICE", "OFFER", "TIP", "SOCIAL_PROOF"];
 const CTA_LABELS = {
@@ -1575,7 +1577,7 @@ export async function getSchedulerStatus(env) {
 export async function runSchedulerOnce(env) {
     const profiles = await getProfiles(env);
     const results = [];
-    for (const p of profilesForDaily) {
+    for (const p of profiles) {
         if (!isProfileActive(p)) continue;
         try {
             const r = await postToGmb(env, { profileId: p.profileId });
@@ -1630,6 +1632,34 @@ export async function deleteScheduledPost(env, id) {
     await deleteScheduledRow(env, id);
 }
 
+async function getAutoSchedulerQueue(env) {
+    const raw = (await getJson(env, AUTO_QUEUE_KEY, [])) || [];
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map((item) => {
+            if (!item || typeof item !== "object") return null;
+            if (!item.profileId) return null;
+            const date = item.date || "";
+            const hhmm = item.hhmm || "";
+            return {
+                profileId: item.profileId,
+                date,
+                hhmm,
+                enqueuedAt: item.enqueuedAt || new Date().toISOString()
+            };
+        })
+        .filter(Boolean)
+        .slice(0, 200);
+}
+
+async function saveAutoSchedulerQueue(env, queue) {
+    await setJson(env, AUTO_QUEUE_KEY, Array.isArray(queue) ? queue : []);
+}
+
+function autoQueueKey(entry) {
+    return `${entry.profileId || ""}:${entry.date || ""}:${entry.hhmm || ""}`;
+}
+
 export async function scheduledTick(env) {
     // Process explicit scheduled posts first
     const scheduled = await getAllScheduledPosts(env);
@@ -1681,11 +1711,16 @@ export async function scheduledTick(env) {
     }
 
     const cfg = await getSchedulerConfig(env);
-    if (!cfg.enabled) return;
+    const autoSchedulerEnabled = env.AUTO_SCHEDULER_ENABLED === "true";
+    if (!autoSchedulerEnabled || !cfg.enabled) {
+        return;
+    }
 
-    const profilesForDaily = profiles;
     let lastRunMap = (await getJson(env, "schedulerLastRun", {})) || {};
     if (!lastRunMap || typeof lastRunMap !== "object") lastRunMap = {};
+    let autoQueue = await getAutoSchedulerQueue(env);
+    const existingQueueKeys = new Set(autoQueue.map(autoQueueKey));
+    let queueModified = false;
 
     const now = new Date();
     const hh = String(now.getHours()).padStart(2, "0");
@@ -1761,22 +1796,63 @@ export async function scheduledTick(env) {
             }
         }
 
+        const key = `${p.profileId}:${today}:${hhmm}`;
+        if (!existingQueueKeys.has(key)) {
+            autoQueue.push({
+                profileId: p.profileId,
+                date: today,
+                hhmm,
+                enqueuedAt: new Date().toISOString()
+            });
+            existingQueueKeys.add(key);
+            queueModified = true;
+        }
+    }
+
+    if (queueModified) {
+        await saveAutoSchedulerQueue(env, autoQueue);
+    }
+
+    const perTickLimitRaw = env.AUTO_SCHEDULER_PER_TICK;
+    const perTickLimit =
+        typeof perTickLimitRaw === "string" ?
+        parseInt(perTickLimitRaw, 10) || DEFAULT_AUTO_PER_TICK :
+        DEFAULT_AUTO_PER_TICK;
+    const toProcess = autoQueue.slice(0, Math.max(1, perTickLimit));
+    autoQueue = autoQueue.slice(toProcess.length);
+
+    for (const entry of toProcess) {
+        const profile = profiles.find((p) => p && p.profileId === entry.profileId);
+        if (!profile) {
+            console.warn("[scheduler] Queue entry missing profile", entry.profileId);
+            continue;
+        }
         try {
-            await postToGmb(env, { profileId: p.profileId });
+            await postToGmb(env, { profileId: entry.profileId });
+            const last = normalizeLast(lastRunMap[entry.profileId]);
             const timesMap = last.times || {};
-            timesMap[hhmm] = true;
-            lastRunMap[p.profileId] = { date: today, times: timesMap };
-            console.log("[scheduler] Posted to", p.businessName, "at", hhmm);
+            const marker = entry.hhmm || hhmm;
+            const markerDate = entry.date || today;
+            timesMap[marker] = true;
+            lastRunMap[entry.profileId] = { date: markerDate, times: timesMap };
+            console.log("[scheduler] Posted to", profile.businessName, "from queue", markerDate, marker);
         } catch (e) {
+            const last = normalizeLast(lastRunMap[entry.profileId]);
             const timesMap = last.times || {};
-            timesMap[hhmm] = true;
-            lastRunMap[p.profileId] = { date: today, times: timesMap };
+            const marker = entry.hhmm || hhmm;
+            const markerDate = entry.date || today;
+            timesMap[marker] = true;
+            lastRunMap[entry.profileId] = { date: markerDate, times: timesMap };
             console.error(
-                "[scheduler] Failed for",
-                p.businessName,
+                "[scheduler] Failed from queue for",
+                profile.businessName,
                 String(e && e.message ? e.message : e)
             );
         }
+    }
+
+    if (toProcess.length || queueModified) {
+        await saveAutoSchedulerQueue(env, autoQueue);
     }
 
     await setJson(env, "schedulerLastRun", lastRunMap);
