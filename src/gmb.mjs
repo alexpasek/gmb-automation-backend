@@ -36,6 +36,101 @@ async function ensureKvTable(env) {
   `).run();
 }
 
+function randomId(prefix = "svc") {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return `${prefix}-${crypto.randomUUID()}`;
+    }
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeServiceTopicsList(list = [], desiredDefaultId = "") {
+    if (!Array.isArray(list)) return { items: [], defaultId: "" };
+    const items = [];
+    const seenIds = new Set();
+    let explicitDefaultId = "";
+    list.forEach((topic, idx) => {
+        if (!topic || typeof topic !== "object") return;
+        const label = String(topic.label || topic.name || topic.serviceType || "").trim();
+        if (!label) return;
+        let id = String(topic.id || topic.key || "").trim();
+        if (!id) {
+            const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+            id = slug ? `${slug}-${idx}` : randomId("svc");
+        }
+        if (seenIds.has(id)) {
+            id = `${id}-${idx}`;
+        }
+        seenIds.add(id);
+        const summary = String(topic.summary || topic.body || "").trim();
+        const hashtags = Array.isArray(topic.hashtags) ?
+            topic.hashtags
+            .map((tag) => String(tag || "").trim())
+            .filter(Boolean) :
+            [];
+        const entry = {
+            id,
+            label,
+            serviceType: String(topic.serviceType || label || "").trim(),
+            summary,
+            hashtags,
+            notes: String(topic.notes || "").trim(),
+            isDefault: !!topic.isDefault
+        };
+        if (entry.isDefault) {
+            explicitDefaultId = entry.id;
+        }
+        items.push(entry);
+    });
+    let defaultId = desiredDefaultId || explicitDefaultId || "";
+    if (defaultId && !items.some((topic) => topic.id === defaultId)) {
+        defaultId = "";
+    }
+    if (!defaultId && items.length) {
+        const flagged = items.find((topic) => topic.isDefault);
+        defaultId = flagged ? flagged.id : items[0].id;
+    }
+    const normalized = items.map((topic) => ({
+        ...topic,
+        isDefault: topic.id === defaultId
+    }));
+    return { items: normalized, defaultId: defaultId || "" };
+}
+
+function getProfileServiceTopics(profile) {
+    return Array.isArray(profile && profile.serviceTopics) ? profile.serviceTopics : [];
+}
+
+function findServiceTopic(profile, topicId) {
+    if (!topicId) return null;
+    const list = getProfileServiceTopics(profile);
+    return list.find((topic) => topic && topic.id === topicId) || null;
+}
+
+function getDefaultServiceTopic(profile) {
+    const list = getProfileServiceTopics(profile);
+    if (!list.length) return null;
+    const targetId = profile && profile.defaultServiceTopicId;
+    if (targetId) {
+        const match = list.find((topic) => topic && topic.id === targetId);
+        if (match) return match;
+    }
+    const flagged = list.find((topic) => topic && topic.isDefault);
+    return flagged || list[0];
+}
+
+function normalizeMediaTopicsMap(env, map = {}) {
+    if (!map || typeof map !== "object") return {};
+    const out = {};
+    Object.entries(map).forEach(([key, val]) => {
+        if (!val) return;
+        const normalizedUrl = ensureAbsoluteMediaUrl(env, key);
+        const topicId = String(val || "").trim();
+        if (!normalizedUrl || !topicId) return;
+        out[normalizedUrl] = topicId;
+    });
+    return out;
+}
+
 function normalizeProfiles(list) {
     if (!Array.isArray(list)) return [];
     return list.map((p) => {
@@ -44,6 +139,11 @@ function normalizeProfiles(list) {
         if (!Array.isArray(out.neighbourhoods)) out.neighbourhoods = [];
         if (!Array.isArray(out.keywords)) out.keywords = [];
         if (!Array.isArray(out.photoPool)) out.photoPool = [];
+        if (!Array.isArray(out.serviceTopics)) out.serviceTopics = [];
+        if (!out.mediaTopics || typeof out.mediaTopics !== "object") out.mediaTopics = {};
+        const normalizedTopics = normalizeServiceTopicsList(out.serviceTopics, out.defaultServiceTopicId || "");
+        out.serviceTopics = normalizedTopics.items;
+        out.defaultServiceTopicId = normalizedTopics.defaultId;
         if (!out.profileId) out.profileId = out.locationId || "";
         return out;
     });
@@ -91,6 +191,9 @@ function normalizeProfileMedia(env, profile) {
             }
             return entry;
         });
+    }
+    if (out.mediaTopics && typeof out.mediaTopics === "object") {
+        out.mediaTopics = normalizeMediaTopicsMap(env, out.mediaTopics);
     }
     return out;
 }
@@ -456,9 +559,16 @@ async function buildTemplatePost(env, profile, overrides = {}, basics = {}) {
     const idx = entry.idx || 0;
     const template = TEMPLATE_CYCLE[idx % TEMPLATE_CYCLE.length];
 
-    const keywords = Array.isArray(profile.keywords) ? profile.keywords.filter(Boolean) : [];
+    const baseKeywords = Array.isArray(profile.keywords) ? profile.keywords.filter(Boolean) : [];
+    const overrideService = typeof overrides.serviceType === "string" ? overrides.serviceType.trim() : "";
+    const keywords = overrideService ?
+        uniqueArray([overrideService, ...baseKeywords]) :
+        baseKeywords;
     const city = profile.city || profile.region || "";
-    const primaryKw = keywords[0] || overrides.serviceType || profile.businessName || "local services";
+    const primaryKw = keywords[0] ||
+        overrideService ||
+        profile.businessName ||
+        "local services";
     const prevUrl = entry.lastUrl || "";
     const defaults = profile.defaults || {};
 
@@ -678,11 +788,19 @@ const TEMPLATE_MESSAGES = {
 
 export async function composeAiTemplatePost(env, profile, overrides = {}, basics = {}) {
     const tpl = await buildTemplatePost(env, profile, overrides, basics);
-    const neighbourhood = pickNeighbourhood(profile);
+    const serviceKeyword = typeof overrides.serviceType === "string" ? overrides.serviceType.trim() : "";
+    const aiProfile =
+        serviceKeyword ?
+        {
+            ...profile,
+            keywords: uniqueArray([serviceKeyword, ...(profile.keywords || [])])
+        } :
+        profile;
+    const neighbourhood = pickNeighbourhood(aiProfile);
     let aiSummary = "";
     let aiHashtags = [];
     try {
-        const gen = await aiGenerateSummaryAndHashtags(env, profile, neighbourhood);
+        const gen = await aiGenerateSummaryAndHashtags(env, aiProfile, neighbourhood);
         aiSummary = (gen && gen.summary) || "";
         aiHashtags = (gen && Array.isArray(gen.hashtags) && gen.hashtags) || [];
     } catch (e) {
@@ -757,42 +875,114 @@ export async function enqueueScheduledBulk(env, payload) {
 export async function draftScheduledBulk(env, payload) {
     const { profileId, images = [], startAt, cadenceDays = 1, body = {}, autoGenerateSummary = false } = payload || {};
     if (!profileId) throw new Error("Missing profileId");
-    const sanitizedImages = (Array.isArray(images) ? images : [])
-        .map((url) => ensureAbsoluteMediaUrl(env, url))
-        .filter(Boolean);
-    if (!sanitizedImages.length) throw new Error("No images provided");
     const overrides = normalizeBodyMedia(env, body);
     const runStart = startAt ? new Date(startAt) : new Date(Date.now() + 3_600_000);
     if (isNaN(runStart.getTime())) throw new Error("Invalid startAt");
     const profileList = await getProfiles(env);
     const profile = profileList.find((p) => p.profileId === profileId);
+    const mediaTopics = profile && profile.mediaTopics && typeof profile.mediaTopics === "object" ? profile.mediaTopics : {};
+    const defaultTopic = profile ? getDefaultServiceTopic(profile) : null;
+    const defaultTopicId = defaultTopic && defaultTopic.id ? defaultTopic.id : "";
+    const normalizedImages = (Array.isArray(images) ? images : [])
+        .map((entry) => {
+            if (!entry) return null;
+            if (typeof entry === "string") {
+                const mediaUrl = ensureAbsoluteMediaUrl(env, entry);
+                if (!mediaUrl) return null;
+                const topicId = mediaTopics[mediaUrl] || defaultTopicId || "";
+                return { mediaUrl, serviceTopicId: topicId };
+            }
+            if (typeof entry === "object") {
+                const rawUrl = entry.mediaUrl || entry.url || entry.href || entry.source || "";
+                const mediaUrl = ensureAbsoluteMediaUrl(env, rawUrl);
+                if (!mediaUrl) return null;
+                const topicId = String(entry.serviceTopicId || entry.topicId || mediaTopics[mediaUrl] || defaultTopicId || "").trim();
+                return { mediaUrl, serviceTopicId: topicId };
+            }
+            return null;
+        })
+        .filter((entry) => entry && entry.mediaUrl);
+    if (!normalizedImages.length) throw new Error("No images provided");
+
+    let basicsCache = null;
+    const loadBasics = async () => {
+        if (!profile) return null;
+        if (!basicsCache) {
+            basicsCache = await fetchLocationBasics(env, profile);
+        }
+        return basicsCache;
+    };
+
     const drafts = [];
-    for (let idx = 0; idx < sanitizedImages.length; idx++) {
-        const mediaUrl = sanitizedImages[idx];
+    for (let idx = 0; idx < normalizedImages.length; idx++) {
+        const { mediaUrl, serviceTopicId } = normalizedImages[idx];
         const runAt = new Date(runStart.getTime() + idx * cadenceDays * 86400000).toISOString();
-        let postText = overrides.postText || "";
-        let cta = overrides.cta || "";
-        let linkUrl = overrides.linkUrl || "";
-        if ((!postText || autoGenerateSummary) && profile) {
-            const basics = await fetchLocationBasics(env, profile);
-            const built = await composeAiTemplatePost(env, profile, overrides || {}, basics);
-            const tagLine = (built.hashtags || []).join(" ");
+        const overridesForDraft = {...overrides, mediaUrl };
+        const topic = profile ?
+            (findServiceTopic(profile, serviceTopicId) || defaultTopic) :
+            null;
+        if (topic && (topic.serviceType || topic.label)) {
+            overridesForDraft.serviceType = topic.serviceType || topic.label;
+        } else if (!topic && overrides.serviceType) {
+            overridesForDraft.serviceType = overrides.serviceType;
+        } else {
+            delete overridesForDraft.serviceType;
+        }
+
+        const topicSummary = topic && topic.summary ? String(topic.summary).trim() : "";
+        const topicHashtags = topic && Array.isArray(topic.hashtags) ? topic.hashtags : [];
+
+        let postText = overridesForDraft.postText || "";
+        if (!autoGenerateSummary && !postText && topicSummary) {
+            postText = topicSummary;
+        }
+        let cta = overridesForDraft.cta || "";
+        let linkUrl = overridesForDraft.linkUrl || "";
+        if ((autoGenerateSummary || !postText) && profile) {
+            const basics = await loadBasics();
+            const built = await composeAiTemplatePost(env, profile, overridesForDraft || {}, basics || {});
+            const mergedHashtags = uniqueArray([...(built.hashtags || []), ...topicHashtags]);
+            const tagLine = mergedHashtags.join(" ");
             postText = (built.summary || "").trim();
             if (tagLine && postText.length + tagLine.length + 2 <= 1500) {
                 postText += "\n\n" + tagLine;
             }
             cta = cta || built.ctaCode || "";
             linkUrl = linkUrl || built.site || "";
+        } else if (topicHashtags.length) {
+            const missing = topicHashtags.filter((tag) => tag && !postText.includes(tag));
+            const tagLine = missing.join(" ");
+            if (tagLine && postText.length + tagLine.length + 2 <= 1500) {
+                postText = (postText || "").trim();
+                postText += (postText ? "\n\n" : "") + tagLine;
+            }
         }
+
         if (profile) {
             const quickLines = buildQuickLinkLines(profile.defaults);
             postText = insertQuickLinksBeforeHashtags(postText, quickLines);
         }
+        if (postText.length > 1500) {
+            postText = postText.slice(0, 1500);
+        }
+
+        const bodyPayload = {...overridesForDraft, mediaUrl };
+        bodyPayload.postText = postText;
+        bodyPayload.autoGenerateSummary = autoGenerateSummary;
+        bodyPayload.cta = cta;
+        bodyPayload.linkUrl = linkUrl;
+        if (topic && topic.id) {
+            bodyPayload.serviceTopicId = topic.id;
+            bodyPayload.serviceTopicLabel = topic.label;
+        } else if (serviceTopicId) {
+            bodyPayload.serviceTopicId = serviceTopicId;
+        }
+
         drafts.push({
             id: crypto.randomUUID(),
             runAt,
             profileId,
-            body: {...overrides, mediaUrl, postText, autoGenerateSummary, cta, linkUrl },
+            body: bodyPayload,
         });
     }
     return drafts;
@@ -812,6 +1002,7 @@ export async function appendPhotosToProfile(env, profileId, items = []) {
             const entry = typeof it === "string" ? {
                 url: String(it).trim(),
                 serviceType: "",
+                serviceTopicId: "",
                 captions: [],
                 addedAt: new Date().toISOString()
             } : {...it };
@@ -820,6 +1011,7 @@ export async function appendPhotosToProfile(env, profileId, items = []) {
             return {
                 url: fullUrl,
                 serviceType: String(entry.serviceType || ""),
+                serviceTopicId: String(entry.serviceTopicId || ""),
                 captions: Array.isArray(entry.captions) ? entry.captions.slice(0, 5) : [],
                 addedAt: entry.addedAt || new Date().toISOString()
             };

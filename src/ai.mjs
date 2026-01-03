@@ -481,6 +481,16 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
     ];
     const ctaLine = ctas[Math.floor(Math.random() * ctas.length)];
 
+    const keywordHints = dedupeStrings(keywords)
+        .slice(0, 3)
+        .map((kw) => `'${kw}'`);
+    if (!keywordHints.length) {
+        keywordHints.push(
+            "'popcorn ceiling removal'",
+            "'drywall repair'",
+            "'interior painting'"
+        );
+    }
     const prompt =
         "Return ONLY valid JSON with fields: summary (string), hashtags (array of 5-7 strings). " +
         "Do not include markdown fences. " +
@@ -493,7 +503,9 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         " Always mention the neighbourhood or city in the first two sentences. " +
         "Angle for uniqueness: " +
         angle +
-        " Include at least one main service keyword like 'popcorn ceiling removal', 'drywall repair', or 'interior painting'. " +
+        " Include at least one main service keyword like " +
+        keywordHints.join(", ") +
+        ". " +
         "Include one concrete detail (timeline, material, or measurable benefit) to avoid generic phrasing. " +
         "Mention the location naturally (city and neighbourhood) in the body; do not repeat the exact same phrasing each time. " +
         "Highlight a trust factor: clean work, dust control, before/after results, or reviews. " +

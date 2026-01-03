@@ -557,6 +557,18 @@ async function handleRequest(request, env, ctx) {
         if (body.hasOwnProperty("photoKeywords")) defaults.photoKeywords = String(body.photoKeywords || "").trim();
         if (body.hasOwnProperty("photoCategories")) defaults.photoCategories = String(body.photoCategories || "").trim();
         if (body.hasOwnProperty("disabled")) target.disabled = !!body.disabled;
+        if (body.hasOwnProperty("serviceTopics")) {
+            target.serviceTopics = Array.isArray(body.serviceTopics) ? body.serviceTopics : [];
+        }
+        if (body.hasOwnProperty("defaultServiceTopicId")) {
+            target.defaultServiceTopicId = String(body.defaultServiceTopicId || "").trim();
+        }
+        if (body.hasOwnProperty("mediaTopics")) {
+            target.mediaTopics =
+                body.mediaTopics && typeof body.mediaTopics === "object" ?
+                body.mediaTopics :
+                {};
+        }
 
         target.defaults = defaults;
         profiles[idx] = target;
@@ -627,13 +639,25 @@ async function handleRequest(request, env, ctx) {
         const profiles = await getProfiles(env);
         const profile = profiles.find((p) => p && p.profileId === profileId);
         if (!profile) return jsonResponse({ error: "Profile not found" }, 404);
+        const serviceTopicId = searchParams.get("serviceTopicId") || "";
+        const serviceTopics = Array.isArray(profile.serviceTopics) ? profile.serviceTopics : [];
+        const topic =
+            serviceTopicId ?
+            serviceTopics.find((t) => t && t.id === serviceTopicId) :
+            null;
+        const overrides = topic ?
+            { serviceType: topic.serviceType || topic.label || "" } :
+            {};
 
         const defaults = profile.defaults || {};
         const basics = await fetchLocationBasics(env, profile);
-        const built = await composeAiTemplatePost(env, profile, {}, basics);
-        const quickLinks = buildQuickLinkLines(defaults);
-        let post = insertQuickLinksBeforeHashtags((built.summary || "").trim(), quickLinks);
-        const hashtags = built.hashtags || [];
+        const built = await composeAiTemplatePost(env, profile, overrides, basics);
+        const quickLines = buildQuickLinkLines(defaults);
+        let post = insertQuickLinksBeforeHashtags((built.summary || "").trim(), quickLines);
+        const topicHashtags = topic && Array.isArray(topic.hashtags) ? topic.hashtags : [];
+        const hashtags = Array.from(
+            new Set([...(built.hashtags || []), ...topicHashtags])
+        );
         if (hashtags.length) {
             const spaceLeft = 1450 - post.length;
             if (spaceLeft > 20) {

@@ -17,7 +17,7 @@ fetch profiles.     node src/export-profiles-from-locations.mjs
 
 run log on backend 
 npx wrangler tail gmb-automation-backend --format=pretty
-
+npx wrangler deploy     deployment 
 
 
 http://127.0.0.1:8787/oauth2callback  // local google redirects url change it for local work in env.
