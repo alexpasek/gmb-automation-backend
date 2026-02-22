@@ -26,3 +26,32 @@ ommant to udate front end
 cd gmbfrontend
 VITE_BACKEND_URL=https://gmb-automation-backend.webtoronto22.workers.dev npm run build
 npx wrangler pages deploy dist --project-name gmbfrontend 
+
+
+PHOTO POSTING DEBUG NOTES
+
+photo-now uploads image to GBP photo library (not a normal GBP post card with CTA button)
+
+1) deploy backend first if backend code changed
+npx wrangler deploy
+
+2) tail logs
+npx wrangler tail gmb-automation-backend --format=pretty
+
+3) click "Post photo now" in frontend
+
+4) expected success logs
+[photo-now] start
+[photo-now] success
+mediaItemName: accounts/.../locations/.../media/AF1...
+
+5) verify latest photos for profile
+curl "https://gmb-automation-backend.webtoronto22.workers.dev/photo-latest?profileId=profile-116118369255335894193-16548860165116757481&limit=20"
+
+6) if failed
+check [photo-now] failed in wrangler tail
+check browser Network response body for POST /photo-now
+
+7) reminder
+frontend is using production backend URL when built with:
+VITE_BACKEND_URL=https://gmb-automation-backend.webtoronto22.workers.dev

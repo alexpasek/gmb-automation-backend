@@ -764,9 +764,25 @@ async function handleRequest(request, env, ctx) {
         const profile = profiles.find((p) => p && p.profileId === profileId);
         if (!profile) return jsonResponse({ error: "Profile not found" }, 404);
         try {
-            await uploadPhotoToGmb(env, profile, { mediaUrl, caption: body.caption || "" });
+            console.log("[photo-now] start", {
+                profileId,
+                locationId: profile.locationId || "",
+                mediaUrl
+            });
+            const result = await uploadPhotoToGmb(env, profile, { mediaUrl, caption: body.caption || "" });
+            console.log("[photo-now] success", {
+                profileId,
+                locationId: profile.locationId || "",
+                mediaItemName: result && result.name ? result.name : ""
+            });
             return jsonResponse({ ok: true });
         } catch (e) {
+            console.error("[photo-now] failed", {
+                profileId,
+                locationId: profile.locationId || "",
+                mediaUrl,
+                error: e && e.message ? e.message : String(e)
+            });
             return jsonResponse({ error: e.message || "Photo post failed" }, 400);
         }
     }
