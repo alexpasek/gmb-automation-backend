@@ -251,6 +251,14 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
     const keywords = Array.isArray(profile && profile.keywords) ?
         profile.keywords : [];
     const kwLine = keywords.join(", ");
+    const profileSignals = [businessName, kwLine, city, rawCity]
+        .join(" ")
+        .toLowerCase();
+    const popcornFocus =
+        /\bpopcorn\b/.test(profileSignals) ||
+        /\bceiling removal\b/.test(profileSignals) ||
+        /\bstucco ceiling\b/.test(profileSignals) ||
+        /\bceiling texture\b/.test(profileSignals);
 
     const area = neighbourhood || "";
     let where = "";
@@ -491,6 +499,99 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
             "'interior painting'"
         );
     }
+
+    const homeownerFocuses = [
+        "dust and cleanup anxiety",
+        "making an older ceiling look modern",
+        "brightening a dark room",
+        "getting rid of a dated texture before painting",
+        "making a home feel cleaner and more current",
+        "reducing stress during work in a lived-in home",
+        "preparing the home for sale or staging",
+        "fixing a ceiling that makes the whole room feel tired",
+    ];
+    const homeownerFocus =
+        homeownerFocuses[Math.floor(Math.random() * homeownerFocuses.length)];
+
+    const proofDetails = [
+        "careful floor and furniture protection",
+        "dust-control prep and tidy cleanup",
+        "clear day-by-day communication",
+        "smooth skim coating before primer and paint",
+        "repairing seams, patches, or cracks before finishing",
+        "showing up on time and keeping the mess contained",
+        "a final walk-through so the ceiling looks even in real light",
+        "explaining the process in plain language before work starts",
+    ];
+    const proofDetail = proofDetails[Math.floor(Math.random() * proofDetails.length)];
+
+    const outcomeAngles = [
+        "a smoother ceiling that makes the room feel brighter",
+        "a cleaner, more updated look that feels easier to live with",
+        "a ceiling finish that helps the walls, trim, and lighting look better",
+        "a fresher room that feels less dated the moment you walk in",
+        "a ceiling homeowners no longer feel the need to ignore or apologize for",
+        "a more modern finish that photographs better and feels resale-ready",
+        "a calm, finished look that makes the whole space feel more expensive",
+        "a room that feels bigger, cleaner, and more polished",
+    ];
+    const outcomeAngle =
+        outcomeAngles[Math.floor(Math.random() * outcomeAngles.length)];
+
+    const roomContexts = [
+        "living room",
+        "kitchen",
+        "hallway",
+        "primary bedroom",
+        "whole main floor",
+        "older condo",
+        "family room",
+        "entryway and staircase",
+    ];
+    const roomContext = roomContexts[Math.floor(Math.random() * roomContexts.length)];
+
+    const popcornSpecificAngles = [
+        "Explain why popcorn ceiling removal matters in homeowner terms, not contractor jargon.",
+        "Focus on how removing heavy ceiling texture changes the way light hits the room.",
+        "Address the fear of mess directly and reassure the reader with specific cleanup language.",
+        "Make the update feel practical and visual: less shadow, less dated texture, cleaner lines.",
+        "Tie the service to everyday experience: looking up, hosting guests, repainting, and resale.",
+        "Describe the result in plain English so a homeowner instantly understands the benefit.",
+        "Reference older homes naturally and explain why a smooth ceiling modernizes the whole room.",
+        "Show that the work is about comfort and appearance, not just technical process.",
+    ];
+    const popcornAngle =
+        popcornSpecificAngles[Math.floor(Math.random() * popcornSpecificAngles.length)];
+    const variationId = Math.random().toString(36).slice(2, 10);
+
+    const plainLanguageRule =
+        "Write for homeowners, not contractors. Use plain language people actually understand. " +
+        "Make the benefit easy to picture in a real home. Avoid hollow phrases like 'quality workmanship', " +
+        "'transform your space', or 'expert team' unless tied to a concrete result. ";
+
+    const serviceFocusRule = popcornFocus ?
+        "Service focus is popcorn ceiling removal. Make that service the clear centre of the post. " +
+        "Use one homeowner concern, one proof point, and one visible outcome so the copy feels specific. " +
+        "Chosen variation cues for this draft: homeowner concern = " +
+        homeownerFocus +
+        "; room context = " +
+        roomContext +
+        "; proof point = " +
+        proofDetail +
+        "; visible outcome = " +
+        outcomeAngle +
+        ". " +
+        popcornAngle +
+        " Mention the ceiling outcome in a way a homeowner would notice with their own eyes. " +
+        "If you mention prep or removal, connect it to less mess, smoother results, repainting, brightness, or a more updated room. " :
+        "Chosen variation cues for this draft: homeowner concern = " +
+        homeownerFocus +
+        "; proof point = " +
+        proofDetail +
+        "; visible outcome = " +
+        outcomeAngle +
+        ". ";
+
     const prompt =
         "Return ONLY valid JSON with fields: summary (string), hashtags (array of 5-7 strings). " +
         "Do not include markdown fences. " +
@@ -498,6 +599,7 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         tone +
         ", no phone numbers, no emojis in body, no hashtags in body. " +
         'Write as this business speaking in first person plural ("we"). ' +
+        plainLanguageRule +
         "Opener rule: " +
         opener +
         " Always mention the neighbourhood or city in the first two sentences. " +
@@ -506,9 +608,13 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         " Include at least one main service keyword like " +
         keywordHints.join(", ") +
         ". " +
+        serviceFocusRule +
         "Include one concrete detail (timeline, material, or measurable benefit) to avoid generic phrasing. " +
         "Mention the location naturally (city and neighbourhood) in the body; do not repeat the exact same phrasing each time. " +
         "Highlight a trust factor: clean work, dust control, before/after results, or reviews. " +
+        "Make the post feel meaningfully different from a typical local service ad. Variation ID: " +
+        variationId +
+        ". " +
         "End the body with EXACTLY this CTA: " +
         ctaLine +
         " " +
@@ -524,9 +630,8 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         "\n";
 
     const body = {
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.9
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: prompt }]
     };
 
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {
