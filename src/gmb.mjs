@@ -25,6 +25,16 @@ const CTA_LABELS = {
     SIGN_UP: "Sign up"
 };
 const DEFAULT_MEDIA_BASE = "https://gmb-automation-backend.webtoronto22.workers.dev";
+const DEFAULT_PERFORMANCE_METRICS = [
+    "BUSINESS_IMPRESSIONS_DESKTOP_MAPS",
+    "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH",
+    "BUSINESS_IMPRESSIONS_MOBILE_MAPS",
+    "BUSINESS_IMPRESSIONS_MOBILE_SEARCH",
+    "CALL_CLICKS",
+    "WEBSITE_CLICKS",
+    "BUSINESS_DIRECTION_REQUESTS",
+    "BUSINESS_CONVERSATIONS"
+];
 
 async function ensureKvTable(env) {
     await env.D1_DB.prepare(`
@@ -1314,21 +1324,39 @@ export async function uploadPhotoToGmb(env, profile, body = {}) {
     if (!profile.locationId) throw new Error("Profile missing locationId");
     await verifyLocationExists(env, profile);
     const mediaUrl = resolveMediaUrl(env, body.mediaUrl || profile.defaults?.mediaUrl || "");
+    if (!mediaUrl) {
+        throw new Error("Photo mediaUrl must be a reachable https image or backend /media upload");
+    }
+    const category = String(body.category || "ADDITIONAL").trim().toUpperCase();
     const parentPaths = [
         `locations/${profile.locationId}/media`,
         profile.accountId ? `accounts/${profile.accountId}/locations/${profile.locationId}/media` : null
     ].filter(Boolean);
-    const payload = {
+    const buildPayload = (targetCategory) => ({
         mediaFormat: "PHOTO",
         sourceUrl: mediaUrl,
         locationAssociation: {
-            category: "ADDITIONAL"
+            category: targetCategory
         }
-    };
+    });
+    const payload = buildPayload(category);
     if (body.caption) {
         payload.description = String(body.caption).slice(0, 1500);
     }
-    return callMediaApiWithFallback(env, parentPaths, "POST", payload);
+    try {
+        return await callMediaApiWithFallback(env, parentPaths, "POST", payload);
+    } catch (e) {
+        const msg = e && e.message ? String(e.message) : "";
+        if (category !== "ADDITIONAL" && /Photo tag .* does not apply to this location|INVALID_ARGUMENT/i.test(msg)) {
+            const fallbackPayload = buildPayload("ADDITIONAL");
+            if (body.caption) {
+                fallbackPayload.description = String(body.caption).slice(0, 1500);
+            }
+            const result = await callMediaApiWithFallback(env, parentPaths, "POST", fallbackPayload);
+            return {...result, categoryFallback: { requested: category, used: "ADDITIONAL" } };
+        }
+        throw e;
+    }
 }
 
 export async function fetchLatestMedia(env, profileId, pageSize = 10) {
@@ -1376,6 +1404,174 @@ export async function fetchMediaPaged(env, profileId, pageSize = 20, pages = 3) 
         remaining -= 1;
     }
     return { items: all };
+}
+
+function dateParts(date) {
+    return {
+        year: date.getUTCFullYear(),
+        month: date.getUTCMonth() + 1,
+        day: date.getUTCDate()
+    };
+}
+
+function monthParts(date) {
+    return {
+        year: date.getUTCFullYear(),
+        month: date.getUTCMonth() + 1
+    };
+}
+
+function metricValueNumber(point) {
+    const raw =
+        point?.value ??
+        point?.metricValue?.value ??
+        point?.metricValue ??
+        point?.value?.integerValue ??
+        0;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function insightValueNumber(value) {
+    const raw = value?.value ?? value?.threshold ?? 0;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function normalizePerformanceResponse(data) {
+    const series = [];
+    const groups = Array.isArray(data?.multiDailyMetricTimeSeries) ?
+        data.multiDailyMetricTimeSeries : [];
+    groups.forEach((group) => {
+        const metricSeries = Array.isArray(group?.dailyMetricTimeSeries) ?
+            group.dailyMetricTimeSeries : [];
+        metricSeries.forEach((entry) => {
+            const metric = entry?.dailyMetric || "";
+            const points = Array.isArray(entry?.timeSeries?.datedValues) ?
+                entry.timeSeries.datedValues : [];
+            const values = points.map((point) => {
+                const d = point.date || {};
+                const date = d.year && d.month && d.day ?
+                    `${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` :
+                    "";
+                return { date, value: metricValueNumber(point) };
+            });
+            const total = values.reduce((sum, point) => sum + point.value, 0);
+            if (metric) series.push({ metric, total, values });
+        });
+    });
+    return series;
+}
+
+function parseMonthInput(value) {
+    const m = String(value || "").trim().match(/^(\d{4})-(\d{1,2})$/);
+    if (!m) return null;
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    if (!year || month < 1 || month > 12) return null;
+    return { year, month };
+}
+
+async function fetchPerformanceKeywords(env, locationName, options = {}) {
+    const end = new Date();
+    end.setUTCDate(1);
+    end.setUTCHours(0, 0, 0, 0);
+    end.setUTCMonth(end.getUTCMonth() - 1);
+    const monthCount = Math.max(1, Math.min(18, Number(options.monthCount) || 6));
+    const requestedStart = parseMonthInput(options.startMonth);
+    const requestedEnd = parseMonthInput(options.endMonth);
+    let startParts;
+    let endParts;
+    if (requestedStart && requestedEnd) {
+        startParts = requestedStart;
+        endParts = requestedEnd;
+    } else {
+        const start = new Date(end);
+        start.setUTCMonth(start.getUTCMonth() - (monthCount - 1));
+        startParts = monthParts(start);
+        endParts = monthParts(end);
+    }
+    const startSort = startParts.year * 100 + startParts.month;
+    const endSort = endParts.year * 100 + endParts.month;
+    if (startSort > endSort) {
+        const tmp = startParts;
+        startParts = endParts;
+        endParts = tmp;
+    }
+    const params = new URLSearchParams();
+    params.set("monthlyRange.start_month.year", String(startParts.year));
+    params.set("monthlyRange.start_month.month", String(startParts.month));
+    params.set("monthlyRange.end_month.year", String(endParts.year));
+    params.set("monthlyRange.end_month.month", String(endParts.month));
+    params.set("pageSize", "25");
+
+    const url =
+        `https://businessprofileperformance.googleapis.com/v1/${locationName}/searchkeywords/impressions/monthly?${params.toString()}`;
+    const data = await callBusinessProfileApi(env, url, { method: "GET" });
+    const keywords = Array.isArray(data?.searchKeywordsCounts) ?
+        data.searchKeywordsCounts : [];
+    return {
+        startMonth: `${startParts.year}-${String(startParts.month).padStart(2, "0")}`,
+        endMonth: `${endParts.year}-${String(endParts.month).padStart(2, "0")}`,
+        items: keywords.map((item) => ({
+            keyword: item.searchKeyword || "",
+            value: insightValueNumber(item.insightsValue || {}),
+            threshold: item.insightsValue?.threshold || ""
+        })).filter((item) => item.keyword)
+    };
+}
+
+export async function fetchPerformanceMetrics(env, profileId, options = {}) {
+    if (!profileId) throw new Error("Missing profileId");
+    const profiles = await getProfiles(env);
+    const profile = profiles.find((p) => p && p.profileId === profileId);
+    if (!profile) throw new Error("Profile not found");
+    if (!profile.locationId) throw new Error("Profile missing locationId");
+
+    const days = Math.max(7, Math.min(90, Number(options.days) || 30));
+    const end = new Date();
+    end.setUTCHours(0, 0, 0, 0);
+    end.setUTCDate(end.getUTCDate() - 1);
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - (days - 1));
+    const startParts = dateParts(start);
+    const endParts = dateParts(end);
+
+    const metrics = Array.isArray(options.metrics) && options.metrics.length ?
+        options.metrics : DEFAULT_PERFORMANCE_METRICS;
+    const params = new URLSearchParams();
+    metrics.forEach((metric) => params.append("dailyMetrics", metric));
+    params.set("dailyRange.start_date.year", String(startParts.year));
+    params.set("dailyRange.start_date.month", String(startParts.month));
+    params.set("dailyRange.start_date.day", String(startParts.day));
+    params.set("dailyRange.end_date.year", String(endParts.year));
+    params.set("dailyRange.end_date.month", String(endParts.month));
+    params.set("dailyRange.end_date.day", String(endParts.day));
+
+    const locationName = `locations/${profile.locationId}`;
+    const url =
+        `https://businessprofileperformance.googleapis.com/v1/${locationName}:fetchMultiDailyMetricsTimeSeries?${params.toString()}`;
+    const data = await callBusinessProfileApi(env, url, { method: "GET" });
+    let keywords = { startMonth: "", endMonth: "", items: [] };
+    let keywordError = "";
+    try {
+        keywords = await fetchPerformanceKeywords(env, locationName, {
+            monthCount: options.keywordMonths || 6,
+            startMonth: options.startMonth || "",
+            endMonth: options.endMonth || ""
+        });
+    } catch (e) {
+        keywordError = e && e.message ? e.message : String(e);
+    }
+    return {
+        profileId,
+        locationId: profile.locationId,
+        startDate: `${startParts.year}-${String(startParts.month).padStart(2, "0")}-${String(startParts.day).padStart(2, "0")}`,
+        endDate: `${endParts.year}-${String(endParts.month).padStart(2, "0")}-${String(endParts.day).padStart(2, "0")}`,
+        metrics: normalizePerformanceResponse(data),
+        keywords,
+        keywordError
+    };
 }
 
 export async function postToGmb(env, body) {
@@ -1427,7 +1623,7 @@ export async function postToGmb(env, body) {
         basics.websiteUri ||
         profile.landingUrl ||
         "";
-    const overlayUsed = ensureAbsoluteMediaUrl(env, (body && body.overlayUrl) || "");
+    const overlayUsed = ensureAbsoluteMediaUrl(env, (body && body.overlayUrl) || defaults.overlayUrl || "");
     const phoneOverride = (body && body.phone) || defaults.phone || "";
     const providedLinkUrl = linkUrl;
     const siteCandidate = basics.websiteUri || profile.landingUrl || "";
@@ -1790,6 +1986,53 @@ export async function runSchedulerNow(env, profileId) {
     return r;
 }
 
+export async function runDueScheduledPhotos(env) {
+    const profiles = await getProfiles(env);
+    const scheduledPhotos = await getAllScheduledPhotos(env);
+    const nowMs = Date.now();
+    const results = [];
+
+    for (const item of scheduledPhotos) {
+        if (item.status && item.status !== "QUEUED") continue;
+        const due = item && item.runAt ? new Date(item.runAt).getTime() : 0;
+        if (!due || due > nowMs || !item.profileId) continue;
+
+        try {
+            const profile = profiles.find((p) => p && p.profileId === item.profileId);
+            if (!profile) throw new Error("Profile not found for scheduled photo");
+            const photoMediaUrl = ensureAbsoluteMediaUrl(env, item.body?.mediaUrl || "");
+            if (!photoMediaUrl) throw new Error("Scheduled photo missing mediaUrl");
+                const body = {
+                    profileId: item.profileId,
+                    mediaUrl: photoMediaUrl,
+                    caption: item.body?.caption || "",
+                    category: item.body?.category || "ADDITIONAL"
+                };
+            const result = await uploadPhotoToGmb(env, profile, body);
+            console.log("[scheduled-photo] Uploaded photo to GBP library", item.id, "for", item.profileId);
+            await markPhotoPosted(env, item.id);
+            results.push({
+                id: item.id,
+                profileId: item.profileId,
+                ok: true,
+                mediaItemName: result && result.name ? result.name : ""
+            });
+        } catch (e) {
+            const error = e && e.message ? e.message : String(e);
+            console.error("[scheduled-photo] Failed for", item.profileId, item.id, error);
+            await markPhotoFailed(env, item.id, error);
+            results.push({
+                id: item.id,
+                profileId: item.profileId,
+                ok: false,
+                error
+            });
+        }
+    }
+
+    return { ok: true, processed: results.length, results };
+}
+
 export async function enqueueScheduledPost(env, payload) {
     const id = crypto.randomUUID();
     const runAt = new Date(payload.runAt).toISOString();
@@ -1859,30 +2102,7 @@ export async function scheduledTick(env) {
     const nowMs = Date.now();
 
     // Process scheduled photos (photo-only queue)
-    const scheduledPhotos = await getAllScheduledPhotos(env);
-    for (const item of scheduledPhotos) {
-        if (item.status && item.status !== "QUEUED") continue;
-        const due = item && item.runAt ? new Date(item.runAt).getTime() : 0;
-        if (due && due <= nowMs && item.profileId) {
-            try {
-                const profile = profiles.find((p) => p && p.profileId === item.profileId);
-                if (!profile) throw new Error("Profile not found for scheduled photo");
-                const photoMediaUrl = ensureAbsoluteMediaUrl(env, item.body?.mediaUrl || "");
-                if (!photoMediaUrl) throw new Error("Scheduled photo missing mediaUrl");
-                const body = {
-                    profileId: item.profileId,
-                    mediaUrl: photoMediaUrl,
-                    caption: item.body?.caption || ""
-                };
-                await uploadPhotoToGmb(env, profile, body);
-                console.log("[scheduled-photo] Uploaded photo to GBP library", item.id, "for", item.profileId);
-                await markPhotoPosted(env, item.id);
-            } catch (e) {
-                console.error("[scheduled-photo] Failed for", item.profileId, item.id, String(e && e.message ? e.message : e));
-                await markPhotoFailed(env, item.id, e && e.message ? e.message : String(e));
-            }
-        }
-    }
+    await runDueScheduledPhotos(env);
 
     for (const item of scheduled) {
         if (item.status && item.status !== "QUEUED") continue;

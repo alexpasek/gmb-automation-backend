@@ -22,11 +22,13 @@ import {
     enqueueScheduledPhoto,
     saveScheduledPhotos,
     deletePhotoScheduled,
+    runDueScheduledPhotos,
     getCycleStateForProfile,
     getAllScheduledPhotos,
     uploadPhotoToGmb,
     fetchLatestMedia,
     fetchMediaPaged,
+    fetchPerformanceMetrics,
     ensureAbsoluteMediaUrl,
     buildQuickLinkLines,
     insertQuickLinksBeforeHashtags,
@@ -522,6 +524,9 @@ async function handleRequest(request, env, ctx) {
         if (body.hasOwnProperty("mediaUrl")) {
             defaults.mediaUrl = ensureAbsoluteMediaUrl(env, body.mediaUrl || "");
         }
+        if (body.hasOwnProperty("overlayUrl")) {
+            defaults.overlayUrl = ensureAbsoluteMediaUrl(env, body.overlayUrl || "");
+        }
         if (body.hasOwnProperty("phone")) defaults.phone = body.phone;
         if (body.hasOwnProperty("linkOptions")) {
             const opts = Array.isArray(body.linkOptions) ? body.linkOptions : [];
@@ -753,6 +758,20 @@ async function handleRequest(request, env, ctx) {
         }
     }
 
+    if (pathname === "/performance" && request.method === "GET") {
+        const urlObj = new URL(request.url);
+        const profileId = urlObj.searchParams.get("profileId") || "";
+        const days = Number(urlObj.searchParams.get("days") || "30");
+        const startMonth = urlObj.searchParams.get("startMonth") || "";
+        const endMonth = urlObj.searchParams.get("endMonth") || "";
+        try {
+            const result = await fetchPerformanceMetrics(env, profileId, { days, startMonth, endMonth });
+            return jsonResponse(result);
+        } catch (e) {
+            return jsonResponse({ error: e.message || "Failed to fetch performance" }, 400);
+        }
+    }
+
     if (pathname === "/photo-now" && request.method === "POST") {
         const body = await parseJsonBody(request);
         const profileId = String(body.profileId || "").trim();
@@ -769,13 +788,17 @@ async function handleRequest(request, env, ctx) {
                 locationId: profile.locationId || "",
                 mediaUrl
             });
-            const result = await uploadPhotoToGmb(env, profile, { mediaUrl, caption: body.caption || "" });
+            const result = await uploadPhotoToGmb(env, profile, {
+                mediaUrl,
+                caption: body.caption || "",
+                category: body.category || "ADDITIONAL"
+            });
             console.log("[photo-now] success", {
                 profileId,
                 locationId: profile.locationId || "",
                 mediaItemName: result && result.name ? result.name : ""
             });
-            return jsonResponse({ ok: true });
+            return jsonResponse({ ok: true, result });
         } catch (e) {
             console.error("[photo-now] failed", {
                 profileId,
@@ -805,6 +828,15 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true, count: list.length });
         } catch (e) {
             return jsonResponse({ error: e.message || "Failed to save photo schedules" }, 400);
+        }
+    }
+
+    if (pathname === "/photo-scheduled/run-due" && request.method === "POST") {
+        try {
+            const result = await runDueScheduledPhotos(env);
+            return jsonResponse(result);
+        } catch (e) {
+            return jsonResponse({ error: e.message || "Failed to run due photo queue" }, 400);
         }
     }
 
@@ -970,8 +1002,63 @@ async function handleRequest(request, env, ctx) {
         }
         const body = await parseJsonBody(request);
         const prompt = (body.prompt || "").trim() || "home renovation photo";
-        try {
-            // Use DALL·E 3 with URL response, then fetch the image and store in R2
+        const requestedModel = String(
+            body.model || env.OPENAI_IMAGE_MODEL || "gpt-image-1.5"
+        ).trim();
+        const requestedSize = String(body.size || "1536x1024").trim();
+        const requestedQuality = String(body.quality || "high").trim();
+        const origin = new URL(request.url).origin.replace(/\/+$/, "");
+        const key =
+            "ai/" +
+            Date.now() +
+            "-" +
+            Math.random().toString(36).slice(2) +
+            ".jpg";
+
+        async function saveImageBytes(arrayBuf) {
+            await env.MEDIA_BUCKET.put(key, arrayBuf, {
+                httpMetadata: { contentType: "image/jpeg" }
+            });
+            const url = origin + "/media/" + encodeURIComponent(key);
+            return { url, key };
+        }
+
+        async function callGptImage(model) {
+            const openaiResp = await fetch("https://api.openai.com/v1/images/generations", {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model,
+                    prompt,
+                    size: requestedSize,
+                    quality: requestedQuality,
+                    output_format: "jpeg",
+                    output_compression: 88
+                })
+            });
+            if (!openaiResp.ok) {
+                const errText = await openaiResp.text().catch(() => "");
+                throw new Error(errText || `OpenAI ${model} image request failed`);
+            }
+            const data = await openaiResp.json();
+            const base64Image = data?.data?.[0]?.b64_json;
+            if (!base64Image) {
+                throw new Error(`No image bytes returned by ${model}`);
+            }
+            const saved = await saveImageBytes(decodeBase64ToArrayBuffer(base64Image));
+            return {
+                ...saved,
+                prompt,
+                model,
+                size: requestedSize,
+                quality: requestedQuality
+            };
+        }
+
+        async function callDalleFallback(fallbackFrom, cause) {
             const openaiResp = await fetch("https://api.openai.com/v1/images/generations", {
                 method: "POST",
                 headers: {
@@ -988,30 +1075,50 @@ async function handleRequest(request, env, ctx) {
             });
             if (!openaiResp.ok) {
                 const errText = await openaiResp.text().catch(() => "");
-                return jsonResponse({ error: "OpenAI error: " + errText }, 500);
+                throw new Error(
+                    `OpenAI error. ${fallbackFrom} failed: ${cause}; dall-e-3 failed: ${errText}`
+                );
             }
             const data = await openaiResp.json();
             const imgUrl = data?.data?.[0]?.url;
-            if (!imgUrl) return jsonResponse({ error: "No image returned" }, 500);
+            if (!imgUrl) throw new Error("No image returned by dall-e-3 fallback");
 
             const imgResp = await fetch(imgUrl);
             if (!imgResp.ok) {
-                return jsonResponse({ error: "Failed to fetch generated image" }, 500);
+                throw new Error("Failed to fetch generated dall-e-3 image");
             }
-            const arrayBuf = await imgResp.arrayBuffer();
-            const key =
-                "ai/" +
-                Date.now() +
-                "-" +
-                Math.random().toString(36).slice(2) +
-                ".jpg";
-            await env.MEDIA_BUCKET.put(key, arrayBuf, {
-                httpMetadata: { contentType: "image/jpeg" }
-            });
+            const saved = await saveImageBytes(await imgResp.arrayBuffer());
+            return {
+                ...saved,
+                prompt,
+                model: "dall-e-3",
+                size: "1024x1024",
+                quality: "standard",
+                fallbackFrom,
+                fallbackReason: String(cause || "").slice(0, 500)
+            };
+        }
 
-            const origin = new URL(request.url).origin.replace(/\/+$/, "");
-            const url = origin + "/media/" + encodeURIComponent(key);
-            return jsonResponse({ url, key, prompt });
+        try {
+            const models = Array.from(
+                new Set([requestedModel, "gpt-image-1", "dall-e-3"].filter(Boolean))
+            );
+            let lastError = null;
+            for (const model of models) {
+                try {
+                    if (model === "dall-e-3") {
+                        const fallbackFrom = requestedModel === "dall-e-3" ? "gpt-image-1" : requestedModel;
+                        return jsonResponse(
+                            await callDalleFallback(fallbackFrom, lastError?.message || "GPT Image unavailable")
+                        );
+                    }
+                    return jsonResponse(await callGptImage(model));
+                } catch (err) {
+                    lastError = err;
+                    console.warn("AI image model failed", model, err?.message || err);
+                }
+            }
+            return jsonResponse({ error: lastError?.message || "AI image failed" }, 500);
         } catch (err) {
             console.error("AI image error", err);
             return jsonResponse({ error: err.message || "AI image failed" }, 500);
