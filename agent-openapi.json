@@ -1,0 +1,420 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "GMB Automation Agent API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://gmb-automation-backend.webtoronto22.workers.dev"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "AgentApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-agent-api-key"
+      }
+    },
+    "schemas": {}
+  },
+  "security": [
+    {
+      "AgentApiKey": []
+    }
+  ],
+  "paths": {
+    "/agent/profiles": {
+      "get": {
+        "operationId": "listProfiles",
+        "summary": "List Google Business Profile targets",
+        "responses": {
+          "200": {
+            "description": "Profiles"
+          }
+        }
+      }
+    },
+    "/agent/gallery": {
+      "get": {
+        "operationId": "listAgentGallery",
+        "summary": "List R2 gallery images, defaulting to the AI gallery",
+        "parameters": [
+          {
+            "name": "folder",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "ai"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Gallery files"
+          }
+        }
+      }
+    },
+    "/agent/gallery/upload": {
+      "post": {
+        "operationId": "uploadToAiGallery",
+        "summary": "Upload an existing image into the AI gallery",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profileId": {
+                    "type": "string"
+                  },
+                  "profileQuery": {
+                    "type": "string"
+                  },
+                  "businessName": {
+                    "type": "string"
+                  },
+                  "city": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "imageBase64": {
+                    "type": "string"
+                  },
+                  "dataUrl": {
+                    "type": "string"
+                  },
+                  "mimeType": {
+                    "type": "string"
+                  },
+                  "filename": {
+                    "type": "string"
+                  },
+                  "folder": {
+                    "type": "string",
+                    "default": "ai"
+                  },
+                  "addToProfile": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "serviceType": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Uploaded image"
+          }
+        }
+      }
+    },
+    "/agent/images/generate": {
+      "post": {
+        "operationId": "generateImagesToAiGallery",
+        "summary": "Generate images, save them to the AI gallery, and optionally attach them to a profile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profileId": {
+                    "type": "string"
+                  },
+                  "profileQuery": {
+                    "type": "string"
+                  },
+                  "businessName": {
+                    "type": "string"
+                  },
+                  "city": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "serviceType": {
+                    "type": "string"
+                  },
+                  "theme": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "default": 1
+                  },
+                  "size": {
+                    "type": "string",
+                    "default": "1536x1024"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "default": "high"
+                  },
+                  "folder": {
+                    "type": "string",
+                    "default": "ai"
+                  },
+                  "addToProfile": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Generated images"
+          }
+        }
+      }
+    },
+    "/agent/posts/now": {
+      "post": {
+        "operationId": "postNowFromAgent",
+        "summary": "Create a GBP post or photo upload now, optionally generating an image first",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profileId": {
+                    "type": "string"
+                  },
+                  "profileQuery": {
+                    "type": "string"
+                  },
+                  "businessName": {
+                    "type": "string"
+                  },
+                  "city": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "postText": {
+                    "type": "string"
+                  },
+                  "mediaUrl": {
+                    "type": "string"
+                  },
+                  "generateImage": {
+                    "type": "boolean"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "serviceType": {
+                    "type": "string"
+                  },
+                  "photoOnly": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "category": {
+                    "type": "string",
+                    "default": "ADDITIONAL"
+                  },
+                  "cta": {
+                    "type": "string"
+                  },
+                  "linkUrl": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Posted result"
+          }
+        }
+      }
+    },
+    "/agent/posts/daily": {
+      "post": {
+        "operationId": "scheduleDailyAgentPosts",
+        "summary": "Schedule daily GBP posts or photo-only uploads",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profileId": {
+                    "type": "string"
+                  },
+                  "profileQuery": {
+                    "type": "string"
+                  },
+                  "businessName": {
+                    "type": "string"
+                  },
+                  "city": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "serviceType": {
+                    "type": "string"
+                  },
+                  "theme": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 7
+                  },
+                  "time": {
+                    "type": "string",
+                    "default": "10:00"
+                  },
+                  "startDate": {
+                    "type": "string"
+                  },
+                  "generateImages": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "generateImageEachDay": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "mediaUrls": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "photoOnly": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "category": {
+                    "type": "string",
+                    "default": "ADDITIONAL"
+                  },
+                  "autoGenerateSummary": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scheduled items"
+          }
+        }
+      }
+    },
+    "/agent/scheduler/enable": {
+      "post": {
+        "operationId": "enableRecurringAgentScheduler",
+        "summary": "Enable recurring posting for a profile and optionally prefill the AI photo pool",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profileId": {
+                    "type": "string"
+                  },
+                  "profileQuery": {
+                    "type": "string"
+                  },
+                  "businessName": {
+                    "type": "string"
+                  },
+                  "city": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "serviceType": {
+                    "type": "string"
+                  },
+                  "theme": {
+                    "type": "string"
+                  },
+                  "time": {
+                    "type": "string",
+                    "default": "10:00"
+                  },
+                  "cadence": {
+                    "type": "string",
+                    "enum": [
+                      "DAILY1",
+                      "DAILY2",
+                      "DAILY3",
+                      "WEEKLY1"
+                    ],
+                    "default": "DAILY1"
+                  },
+                  "generateImages": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "imageCount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 7
+                  },
+                  "size": {
+                    "type": "string",
+                    "default": "1536x1024"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "default": "high"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scheduler enabled"
+          }
+        }
+      }
+    }
+  }
+}

@@ -242,15 +242,33 @@ function parseJsonResponse(text) {
     }
 }
 
-export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) {
+function splitSeoText(text = "") {
+    return String(text || "")
+        .split(/[\n,;|]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
+
+export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, context = {}) {
     const cityCtx = buildCityContext(profile);
     const city = cityCtx.focusCity || cityCtx.rawCity || "";
     const rawCity = cityCtx.rawCity || "";
     const special = !!cityCtx.forceCalgary;
     const businessName = (profile && profile.businessName) || "";
-    const keywords = Array.isArray(profile && profile.keywords) ?
-        profile.keywords : [];
+    const defaults = profile && profile.defaults ? profile.defaults : {};
+    const keywords = dedupeStrings([
+        ...(Array.isArray(profile && profile.keywords) ? profile.keywords : []),
+        ...splitSeoText(defaults.photoKeywords || ""),
+        ...splitSeoText(defaults.photoCategories || "")
+    ]).slice(0, 12);
     const kwLine = keywords.join(", ");
+    const serviceType = String(context.serviceType || keywords[0] || "").trim();
+    const serviceSummary = String(context.serviceSummary || "").trim();
+    const serviceNotes = String(context.serviceNotes || "").trim();
+    const templateType = String(context.template || "").trim();
+    const ctaLabel = String(context.ctaLabel || "Request a free quote").trim();
+    const hasReviewLink = !!String(defaults.reviewLink || "").trim();
+    const hasServiceAreaLink = !!String(defaults.serviceAreaLink || "").trim();
     const profileSignals = [businessName, kwLine, city, rawCity]
         .join(" ")
         .toLowerCase();
@@ -600,6 +618,16 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         ", no phone numbers, no emojis in body, no hashtags in body. " +
         'Write as this business speaking in first person plural ("we"). ' +
         plainLanguageRule +
+        "Local SEO rules: write naturally for a real homeowner, not keyword stuffing. " +
+        "Use the primary service once in the first half of the post and the city/neighbourhood once in the first two sentences. " +
+        "Include one buyer-intent phrase such as quote, estimate, booking, schedule, nearby, service area, or local contractor. " +
+        "Do not invent ratings, review counts, years in business, warranties, licenses, awards, or job details not supplied. " +
+        (hasReviewLink ?
+            "It is okay to reference reputation or reviews generally, but do not claim a rating or review count. " :
+            "Do not mention reviews unless it fits naturally without claiming proof. ") +
+        (hasServiceAreaLink ?
+            "You may mention that customers can check the service area, but do not paste links in the body. " :
+            "") +
         "Opener rule: " +
         opener +
         " Always mention the neighbourhood or city in the first two sentences. " +
@@ -612,11 +640,14 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         "Include one concrete detail (timeline, material, or measurable benefit) to avoid generic phrasing. " +
         "Mention the location naturally (city and neighbourhood) in the body; do not repeat the exact same phrasing each time. " +
         "Highlight a trust factor: clean work, dust control, before/after results, or reviews. " +
+        "Post format target: " +
+        (templateType || "SERVICE") +
+        ". If the target is TIP, include one practical homeowner tip. If SOCIAL_PROOF, make it trust-focused without fake claims. If OFFER, make the value clear without inventing a discount. " +
         "Make the post feel meaningfully different from a typical local service ad. Variation ID: " +
         variationId +
         ". " +
         "End the body with EXACTLY this CTA: " +
-        ctaLine +
+        (ctaLabel && ctaLabel !== "Learn more" ? ctaLine.replace(/Request a free quote today\.|Get your free estimate now\.|Message us for a free estimate\.|Book a free quote today\.|Contact us for a no-obligation quote\./, `${ctaLabel}.`) : ctaLine) +
         " " +
         "Hashtags should be concise, readable, and include a mix of general and geo hashtags (no punctuation except '#').\n\n" +
         "Business: " +
@@ -624,6 +655,12 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood) 
         "\n" +
         "City/Area: " +
         where +
+        "\n" +
+        "Primary service: " +
+        serviceType +
+        "\n" +
+        "Service details from app: " +
+        [serviceSummary, serviceNotes].filter(Boolean).join(" ") +
         "\n" +
         "Keywords to inspire (do not list verbatim): " +
         kwLine +

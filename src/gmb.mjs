@@ -541,6 +541,13 @@ function uniqueArray(arr) {
     return Array.from(new Set(arr.filter(Boolean)));
 }
 
+function splitKeywordText(text = "") {
+    return String(text || "")
+        .split(/[\n,;|]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
+
 function buildHashtags(keywords = [], city = "", service = "") {
     const tags = [];
     const safeCity = city ? city.replace(/\s+/g, "") : "";
@@ -569,7 +576,15 @@ async function buildTemplatePost(env, profile, overrides = {}, basics = {}) {
     const idx = entry.idx || 0;
     const template = TEMPLATE_CYCLE[idx % TEMPLATE_CYCLE.length];
 
-    const baseKeywords = Array.isArray(profile.keywords) ? profile.keywords.filter(Boolean) : [];
+    const defaults = profile.defaults || {};
+    const defaultSeoKeywords = [
+        ...splitKeywordText(defaults.photoKeywords || ""),
+        ...splitKeywordText(defaults.photoCategories || "")
+    ];
+    const baseKeywords = uniqueArray([
+        ...(Array.isArray(profile.keywords) ? profile.keywords.filter(Boolean) : []),
+        ...defaultSeoKeywords
+    ]).slice(0, 12);
     const overrideService = typeof overrides.serviceType === "string" ? overrides.serviceType.trim() : "";
     const keywords = overrideService ?
         uniqueArray([overrideService, ...baseKeywords]) :
@@ -580,8 +595,6 @@ async function buildTemplatePost(env, profile, overrides = {}, basics = {}) {
         profile.businessName ||
         "local services";
     const prevUrl = entry.lastUrl || "";
-    const defaults = profile.defaults || {};
-
     const site =
         overrides.linkUrl ||
         (profile.defaults && profile.defaults.linkUrl) ||
@@ -799,6 +812,8 @@ const TEMPLATE_MESSAGES = {
 export async function composeAiTemplatePost(env, profile, overrides = {}, basics = {}) {
     const tpl = await buildTemplatePost(env, profile, overrides, basics);
     const serviceKeyword = typeof overrides.serviceType === "string" ? overrides.serviceType.trim() : "";
+    const serviceSummary = typeof overrides.serviceSummary === "string" ? overrides.serviceSummary.trim() : "";
+    const serviceNotes = typeof overrides.serviceNotes === "string" ? overrides.serviceNotes.trim() : "";
     const aiProfile =
         serviceKeyword ?
         {
@@ -806,11 +821,21 @@ export async function composeAiTemplatePost(env, profile, overrides = {}, basics
             keywords: uniqueArray([serviceKeyword, ...(profile.keywords || [])])
         } :
         profile;
-    const neighbourhood = pickNeighbourhood(aiProfile);
+    const neighbourhood =
+        typeof overrides.neighbourhood === "string" && overrides.neighbourhood.trim() ?
+        overrides.neighbourhood.trim() :
+        pickNeighbourhood(aiProfile);
     let aiSummary = "";
     let aiHashtags = [];
     try {
-        const gen = await aiGenerateSummaryAndHashtags(env, aiProfile, neighbourhood);
+        const gen = await aiGenerateSummaryAndHashtags(env, aiProfile, neighbourhood, {
+            serviceType: serviceKeyword,
+            serviceSummary,
+            serviceNotes,
+            template: tpl.template,
+            ctaCode: tpl.ctaCode,
+            ctaLabel: CTA_LABELS[tpl.ctaCode] || "Learn more"
+        });
         aiSummary = (gen && gen.summary) || "";
         aiHashtags = (gen && Array.isArray(gen.hashtags) && gen.hashtags) || [];
     } catch (e) {
