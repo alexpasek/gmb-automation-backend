@@ -249,6 +249,29 @@ function splitSeoText(text = "") {
         .filter(Boolean);
 }
 
+function stripForbiddenMarketingPhrases(text = "") {
+    let out = String(text || "");
+    const patterns = [
+        /\btransform your space\b/gi,
+        /\bexpert team\b/gi,
+        /\bquality workmanship\b/gi,
+        /\btop-notch\b/gi,
+        /\blook no further\b/gi,
+        /\belevate your home\b/gi,
+        /\bunparalleled service\b/gi,
+        /\bpremier provider\b/gi,
+        /\bbest in class\b/gi,
+        /\bdream home\b/gi
+    ];
+    patterns.forEach((pattern) => {
+        out = out.replace(pattern, "").replace(/\s{2,}/g, " ");
+    });
+    return out
+        .replace(/\s+([.,;:!?])/g, "$1")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
 export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, context = {}) {
     const cityCtx = buildCityContext(profile);
     const city = cityCtx.focusCity || cityCtx.rawCity || "";
@@ -265,6 +288,17 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
     const serviceType = String(context.serviceType || keywords[0] || "").trim();
     const serviceSummary = String(context.serviceSummary || "").trim();
     const serviceNotes = String(context.serviceNotes || "").trim();
+    const seoLandingUrl = String(context.seoLandingUrl || "").trim();
+    const primaryKeyword = String(context.primaryKeyword || "").trim();
+    const cityKeyword = String(context.cityKeyword || "").trim();
+    const secondaryKeywords = splitSeoText(context.secondaryKeywords || "");
+    const nearbyAreas = splitSeoText(context.nearbyAreas || "");
+    const recentPostSummaries = Array.isArray(context.recentPostSummaries) ?
+        context.recentPostSummaries
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 5) :
+        [];
     const templateType = String(context.template || "").trim();
     const ctaLabel = String(context.ctaLabel || "Request a free quote").trim();
     const hasReviewLink = !!String(defaults.reviewLink || "").trim();
@@ -610,6 +644,53 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
         outcomeAngle +
         ". ";
 
+    const seoSignals = dedupeStrings([
+        primaryKeyword,
+        cityKeyword,
+        serviceType,
+        ...secondaryKeywords,
+        ...nearbyAreas
+    ].filter(Boolean));
+    const landingPageRule = seoSignals.length || seoLandingUrl ?
+        "Landing-page SEO alignment: write this post as support for the matching local service page. " +
+        "Use the strongest exact service phrase once if it reads naturally, then use related phrases conversationally. " +
+        "Do not paste the landing page URL in the body; the app handles the CTA link separately. " +
+        "Avoid making the post read like a keyword list. " :
+        "";
+    const forbiddenPhrases = [
+        "transform your space",
+        "expert team",
+        "quality workmanship",
+        "top-notch",
+        "look no further",
+        "elevate your home",
+        "unparalleled service",
+        "premier provider",
+        "best in class",
+        "dream home"
+    ];
+    const campaignRules = {
+        PROBLEM_SOLUTION: "Campaign style: problem/solution. Start with a real homeowner problem, then explain the practical fix and the result.",
+        BEFORE_AFTER: "Campaign style: before/after. Make the visual change clear without inventing a specific job.",
+        LOCAL_TRUST: "Campaign style: local trust. Focus on reliability, clean work, communication, and realistic proof without fake claims.",
+        SERVICE_AREA: "Campaign style: service-area reminder. Mention the city plus one nearby area only if it feels natural.",
+        SEASONAL: "Campaign style: seasonal home maintenance. Tie the service to weather, timing, resale, hosting, or renovation planning.",
+        QUOTE_BOOKING: "Campaign style: quote/booking CTA. Make the next step easy and buyer-intent focused.",
+        TIP: "Campaign style: homeowner tip. Include one practical tip a homeowner can use before contacting a contractor.",
+        SOCIAL_PROOF: "Campaign style: social proof. Mention reputation or referrals only generally, without ratings or counts.",
+        OFFER: "Campaign style: offer. Make value clear without inventing discounts, prices, deadlines, or guarantees.",
+        SERVICE: "Campaign style: service page support. Keep the main service and local phrase clear."
+    };
+    const campaignRule = campaignRules[templateType] || campaignRules.SERVICE;
+    const recentHistoryRule = recentPostSummaries.length ?
+        "Avoid repeating the same opening angle, CTA sentence, examples, and hashtag set from recent posts. " +
+        "Do not paraphrase recent posts too closely; make this draft meaningfully different. " :
+        "";
+    const localSeoStructureRule =
+        "Use this post structure: first sentence includes the service and city or neighbourhood; " +
+        "middle sentences explain one problem, one proof/process detail, and one visible homeowner benefit; " +
+        "final sentence is the CTA. Keep links out of the body and keep hashtags separate. ";
+
     const prompt =
         "Return ONLY valid JSON with fields: summary (string), hashtags (array of 5-7 strings). " +
         "Do not include markdown fences. " +
@@ -621,6 +702,14 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
         "Local SEO rules: write naturally for a real homeowner, not keyword stuffing. " +
         "Use the primary service once in the first half of the post and the city/neighbourhood once in the first two sentences. " +
         "Include one buyer-intent phrase such as quote, estimate, booking, schedule, nearby, service area, or local contractor. " +
+        landingPageRule +
+        localSeoStructureRule +
+        campaignRule +
+        " " +
+        recentHistoryRule +
+        "Avoid these generic phrases exactly: " +
+        forbiddenPhrases.join(", ") +
+        ". " +
         "Do not invent ratings, review counts, years in business, warranties, licenses, awards, or job details not supplied. " +
         (hasReviewLink ?
             "It is okay to reference reputation or reviews generally, but do not claim a rating or review count. " :
@@ -642,7 +731,7 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
         "Highlight a trust factor: clean work, dust control, before/after results, or reviews. " +
         "Post format target: " +
         (templateType || "SERVICE") +
-        ". If the target is TIP, include one practical homeowner tip. If SOCIAL_PROOF, make it trust-focused without fake claims. If OFFER, make the value clear without inventing a discount. " +
+        ". Follow the campaign style for that target. " +
         "Make the post feel meaningfully different from a typical local service ad. Variation ID: " +
         variationId +
         ". " +
@@ -661,6 +750,18 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
         "\n" +
         "Service details from app: " +
         [serviceSummary, serviceNotes].filter(Boolean).join(" ") +
+        "\n" +
+        "Landing page URL for CTA context only: " +
+        seoLandingUrl +
+        "\n" +
+        "Landing page SEO phrases to align with naturally: " +
+        seoSignals.join(", ") +
+        "\n" +
+        "Nearby areas to mention only if natural: " +
+        nearbyAreas.join(", ") +
+        "\n" +
+        "Recent posts to avoid repeating:\n" +
+        recentPostSummaries.map((item, idx) => `${idx + 1}. ${item}`).join("\n") +
         "\n" +
         "Keywords to inspire (do not list verbatim): " +
         kwLine +
@@ -700,6 +801,7 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
 
     let summary =
         typeof obj.summary === "string" ? obj.summary.trim() : String(txt || "");
+    summary = stripForbiddenMarketingPhrases(summary);
     let hashtags = Array.isArray(obj.hashtags) ? obj.hashtags : [];
     const cleaned = [];
     for (let i = 0; i < hashtags.length; i++) {

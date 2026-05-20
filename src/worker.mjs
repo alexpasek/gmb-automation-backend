@@ -426,8 +426,7 @@ async function generateAiImageToGallery(request, env, body = {}) {
                 model: "dall-e-3",
                 prompt,
                 size: "1024x1024",
-                quality: "standard",
-                response_format: "url"
+                quality: "standard"
             })
         });
         if (!openaiResp.ok) {
@@ -1475,6 +1474,8 @@ async function handleRequest(request, env, ctx) {
                 serviceType: topic.serviceType || topic.label || "",
                 serviceSummary: topic.summary || "",
                 serviceNotes: topic.notes || "",
+                serviceTopicId: topic.id || "",
+                linkUrl: topic.landingUrl || "",
                 neighbourhood: neighbourhoodOverride
             } :
             { neighbourhood: neighbourhoodOverride };
@@ -1893,8 +1894,7 @@ async function handleRequest(request, env, ctx) {
                     model: "dall-e-3",
                     prompt,
                     size: "1024x1024",
-                    quality: "standard",
-                    response_format: "url"
+                    quality: "standard"
                 })
             });
             if (!openaiResp.ok) {

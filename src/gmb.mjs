@@ -15,7 +15,18 @@ const DEFAULT_SCHED = {
 const AUTO_QUEUE_KEY = "autoSchedulerQueue";
 const DEFAULT_AUTO_PER_TICK = 2;
 
-const TEMPLATE_CYCLE = ["SERVICE", "OFFER", "TIP", "SOCIAL_PROOF"];
+const TEMPLATE_CYCLE = [
+    "SERVICE",
+    "PROBLEM_SOLUTION",
+    "BEFORE_AFTER",
+    "LOCAL_TRUST",
+    "SERVICE_AREA",
+    "SEASONAL",
+    "QUOTE_BOOKING",
+    "TIP",
+    "SOCIAL_PROOF",
+    "OFFER"
+];
 const CTA_LABELS = {
     CALL_NOW: "Call now",
     LEARN_MORE: "Learn more",
@@ -81,6 +92,11 @@ function normalizeServiceTopicsList(list = [], desiredDefaultId = "") {
             id,
             label,
             serviceType: String(topic.serviceType || label || "").trim(),
+            primaryKeyword: String(topic.primaryKeyword || "").trim(),
+            cityKeyword: String(topic.cityKeyword || "").trim(),
+            secondaryKeywords: String(topic.secondaryKeywords || "").trim(),
+            nearbyAreas: String(topic.nearbyAreas || "").trim(),
+            landingUrl: String(topic.landingUrl || topic.linkUrl || "").trim(),
             summary,
             hashtags,
             notes: String(topic.notes || "").trim(),
@@ -577,15 +593,25 @@ async function buildTemplatePost(env, profile, overrides = {}, basics = {}) {
     const template = TEMPLATE_CYCLE[idx % TEMPLATE_CYCLE.length];
 
     const defaults = profile.defaults || {};
+    const topic = overrides.serviceTopicId ? findServiceTopic(profile, overrides.serviceTopicId) : null;
+    const topicSeoKeywords = topic ? [
+        topic.primaryKeyword,
+        topic.cityKeyword,
+        ...splitKeywordText(topic.secondaryKeywords || ""),
+        ...splitKeywordText(topic.nearbyAreas || "")
+    ] : [];
     const defaultSeoKeywords = [
         ...splitKeywordText(defaults.photoKeywords || ""),
         ...splitKeywordText(defaults.photoCategories || "")
     ];
     const baseKeywords = uniqueArray([
+        ...topicSeoKeywords,
         ...(Array.isArray(profile.keywords) ? profile.keywords.filter(Boolean) : []),
         ...defaultSeoKeywords
     ]).slice(0, 12);
-    const overrideService = typeof overrides.serviceType === "string" ? overrides.serviceType.trim() : "";
+    const overrideService = typeof overrides.serviceType === "string" && overrides.serviceType.trim() ?
+        overrides.serviceType.trim() :
+        topic && typeof topic.serviceType === "string" ? topic.serviceType.trim() : "";
     const keywords = overrideService ?
         uniqueArray([overrideService, ...baseKeywords]) :
         baseKeywords;
@@ -597,6 +623,7 @@ async function buildTemplatePost(env, profile, overrides = {}, basics = {}) {
     const prevUrl = entry.lastUrl || "";
     const site =
         overrides.linkUrl ||
+        (topic && topic.landingUrl) ||
         (profile.defaults && profile.defaults.linkUrl) ||
         basics.websiteUri ||
         profile.landingUrl ||
@@ -791,6 +818,30 @@ const DETAIL_OPTIONS_TWO = [
 ];
 
 const TEMPLATE_MESSAGES = {
+    PROBLEM_SOLUTION: [
+        "Common issue in {city}: dated {serviceLower}. Here is how {business} fixes it.",
+        "{business} helps {city} homeowners turn a frustrating {serviceLower} problem into a cleaner result."
+    ],
+    BEFORE_AFTER: [
+        "Before-and-after work is where {business} makes {serviceLower} easy to understand.",
+        "{city} homes can feel noticeably fresher when {serviceLower} is handled with careful prep."
+    ],
+    LOCAL_TRUST: [
+        "Local homeowners call {business} when they want {serviceLower} handled clearly and respectfully.",
+        "{business} focuses on reliable communication and tidy work for {serviceLower} in {city}."
+    ],
+    SERVICE_AREA: [
+        "{business} serves {city} and nearby neighbourhoods with practical {serviceLower}.",
+        "If you are nearby in {city}, {business} can help plan the next {serviceLower} project."
+    ],
+    SEASONAL: [
+        "Seasonal home updates are easier when {serviceLower} is planned before the busy rush.",
+        "{business} helps {city} homeowners time {serviceLower} around real life and weather."
+    ],
+    QUOTE_BOOKING: [
+        "Ready to compare options? {business} can quote {serviceLower} for {city} homes.",
+        "Ask {business} for a clear estimate before booking {serviceLower} in {city}."
+    ],
     OFFER: [
         "Limited-time offer ready now—ask us to lock it in for {city}.",
         "{business} lined up a savings window for {serviceLower} this week."
@@ -811,20 +862,46 @@ const TEMPLATE_MESSAGES = {
 
 export async function composeAiTemplatePost(env, profile, overrides = {}, basics = {}) {
     const tpl = await buildTemplatePost(env, profile, overrides, basics);
-    const serviceKeyword = typeof overrides.serviceType === "string" ? overrides.serviceType.trim() : "";
-    const serviceSummary = typeof overrides.serviceSummary === "string" ? overrides.serviceSummary.trim() : "";
-    const serviceNotes = typeof overrides.serviceNotes === "string" ? overrides.serviceNotes.trim() : "";
+    const topic = overrides.serviceTopicId ? findServiceTopic(profile, overrides.serviceTopicId) : null;
+    const serviceKeyword = typeof overrides.serviceType === "string" && overrides.serviceType.trim() ?
+        overrides.serviceType.trim() :
+        topic && typeof topic.serviceType === "string" ? topic.serviceType.trim() : "";
+    const serviceSummary = typeof overrides.serviceSummary === "string" && overrides.serviceSummary.trim() ?
+        overrides.serviceSummary.trim() :
+        topic && typeof topic.summary === "string" ? topic.summary.trim() : "";
+    const serviceNotes = typeof overrides.serviceNotes === "string" && overrides.serviceNotes.trim() ?
+        overrides.serviceNotes.trim() :
+        topic && typeof topic.notes === "string" ? topic.notes.trim() : "";
+    const seoLandingUrl = typeof overrides.linkUrl === "string" && overrides.linkUrl.trim() ?
+        overrides.linkUrl.trim() :
+        topic && typeof topic.landingUrl === "string" ? topic.landingUrl.trim() : "";
+    const primaryKeyword = topic && typeof topic.primaryKeyword === "string" ? topic.primaryKeyword.trim() : "";
+    const cityKeyword = topic && typeof topic.cityKeyword === "string" ? topic.cityKeyword.trim() : "";
+    const secondaryKeywords = topic && typeof topic.secondaryKeywords === "string" ? topic.secondaryKeywords.trim() : "";
+    const nearbyAreas = topic && typeof topic.nearbyAreas === "string" ? topic.nearbyAreas.trim() : "";
     const aiProfile =
         serviceKeyword ?
         {
             ...profile,
-            keywords: uniqueArray([serviceKeyword, ...(profile.keywords || [])])
+            keywords: uniqueArray([
+                primaryKeyword,
+                cityKeyword,
+                serviceKeyword,
+                ...splitKeywordText(secondaryKeywords),
+                ...(profile.keywords || [])
+            ].filter(Boolean))
         } :
         profile;
     const neighbourhood =
         typeof overrides.neighbourhood === "string" && overrides.neighbourhood.trim() ?
         overrides.neighbourhood.trim() :
         pickNeighbourhood(aiProfile);
+    const recentHistory = await getPostsHistory(env, profile.profileId, 8);
+    const recentPostSummaries = recentHistory
+        .slice(-5)
+        .map((item) => String(item && item.summary || "").trim())
+        .filter(Boolean)
+        .map((text) => text.slice(0, 420));
     let aiSummary = "";
     let aiHashtags = [];
     try {
@@ -832,6 +909,12 @@ export async function composeAiTemplatePost(env, profile, overrides = {}, basics
             serviceType: serviceKeyword,
             serviceSummary,
             serviceNotes,
+            seoLandingUrl,
+            primaryKeyword,
+            cityKeyword,
+            secondaryKeywords,
+            nearbyAreas,
+            recentPostSummaries,
             template: tpl.template,
             ctaCode: tpl.ctaCode,
             ctaLabel: CTA_LABELS[tpl.ctaCode] || "Learn more"
@@ -958,6 +1041,12 @@ export async function draftScheduledBulk(env, payload) {
             null;
         if (topic && (topic.serviceType || topic.label)) {
             overridesForDraft.serviceType = topic.serviceType || topic.label;
+            overridesForDraft.serviceSummary = topic.summary || "";
+            overridesForDraft.serviceNotes = topic.notes || "";
+            overridesForDraft.serviceTopicId = topic.id;
+            if (!overridesForDraft.linkUrl && topic.landingUrl) {
+                overridesForDraft.linkUrl = topic.landingUrl;
+            }
         } else if (!topic && overrides.serviceType) {
             overridesForDraft.serviceType = overrides.serviceType;
         } else {
@@ -1614,9 +1703,17 @@ export async function postToGmb(env, body) {
     let hashtags = [];
     let ctaFromTemplate = null;
     let linkOverride = null;
+    const requestedTopic = body && body.serviceTopicId ? findServiceTopic(profile, body.serviceTopicId) : null;
+    const generationBody = requestedTopic ? {
+        ...(body || {}),
+        serviceType: body.serviceType || requestedTopic.serviceType || requestedTopic.label || "",
+        serviceSummary: body.serviceSummary || requestedTopic.summary || "",
+        serviceNotes: body.serviceNotes || requestedTopic.notes || "",
+        linkUrl: body.linkUrl || requestedTopic.landingUrl || ""
+    } : (body || {});
 
     if (!summary) {
-        const built = await composeAiTemplatePost(env, profile, body || {}, basics);
+        const built = await composeAiTemplatePost(env, profile, generationBody, basics);
         summary = built.summary || "";
         hashtags = built.hashtags || [];
         templateState = { idx: built.nextState ? built.nextState.idx : null };
