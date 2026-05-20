@@ -87,6 +87,28 @@ export async function ensureYoutubeTables(env) {
       updated_at TEXT NOT NULL
     );
   `).run();
+
+    await env.D1_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS youtube_community_posts (
+      id TEXT PRIMARY KEY,
+      channel_db_id TEXT,
+      channel_id TEXT,
+      post_text TEXT NOT NULL,
+      image_url TEXT,
+      service TEXT,
+      city TEXT,
+      neighbourhoods TEXT,
+      post_type TEXT,
+      website_url TEXT,
+      utm_url TEXT,
+      hashtags TEXT,
+      status TEXT NOT NULL,
+      posted_at TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `).run();
 }
 
 export function buildYoutubeAuthUrl(request, env) {
@@ -304,4 +326,68 @@ export async function updateYoutubeVideoRecord(env, id, patch = {}) {
         nowIso()
     ).run();
     return next;
+}
+
+export async function insertYoutubeCommunityDraft(env, payload) {
+    await ensureYoutubeTables(env);
+    const id = payload.id || randomId("ytcom");
+    const now = nowIso();
+    await env.D1_DB.prepare(`
+      INSERT INTO youtube_community_posts (
+        id, channel_db_id, channel_id, post_text, image_url, service, city,
+        neighbourhoods, post_type, website_url, utm_url, hashtags, status,
+        posted_at, error_message, created_at, updated_at
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)
+    `).bind(
+        id,
+        payload.channelDbId || "",
+        payload.channelId || "",
+        payload.postText || "",
+        payload.imageUrl || "",
+        payload.service || "",
+        payload.city || "",
+        JSON.stringify(payload.neighbourhoods || []),
+        payload.postType || "community_post",
+        payload.websiteUrl || "",
+        payload.utmUrl || "",
+        JSON.stringify(payload.hashtags || []),
+        payload.status || "DRAFT",
+        payload.postedAt || "",
+        payload.errorMessage || "",
+        now
+    ).run();
+    return id;
+}
+
+export async function listYoutubeCommunityDrafts(env, limit = 50) {
+    await ensureYoutubeTables(env);
+    const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 50));
+    const { results } = await env.D1_DB.prepare(`
+      SELECT *
+      FROM youtube_community_posts
+      ORDER BY created_at DESC
+      LIMIT ?1
+    `).bind(safeLimit).all();
+    return (results || []).map((row) => ({
+        ...row,
+        neighbourhoods: (() => {
+            try { return JSON.parse(row.neighbourhoods || "[]"); } catch { return []; }
+        })(),
+        hashtags: (() => {
+            try { return JSON.parse(row.hashtags || "[]"); } catch { return []; }
+        })()
+    }));
+}
+
+export async function markYoutubeCommunityDraftPosted(env, id) {
+    await ensureYoutubeTables(env);
+    const now = nowIso();
+    await env.D1_DB.prepare(`
+      UPDATE youtube_community_posts
+      SET status = 'POSTED', posted_at = ?2, updated_at = ?2
+      WHERE id = ?1
+    `).bind(id, now).run();
+    const row = await env.D1_DB.prepare("SELECT * FROM youtube_community_posts WHERE id = ?1").bind(id).first();
+    return row;
 }

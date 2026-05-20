@@ -1,6 +1,6 @@
 import { postToGmb } from "../gmb.mjs";
-import { buildYoutubeAuthUrl, getYoutubeChannelForUse, insertYoutubeVideoRecord, listYoutubeChannels, saveYoutubeConnection, updateYoutubeVideoRecord } from "../services/youtubeAuth.mjs";
-import { generateYoutubeSeo } from "../services/youtubeSeo.mjs";
+import { buildYoutubeAuthUrl, getYoutubeChannelForUse, insertYoutubeCommunityDraft, insertYoutubeVideoRecord, listYoutubeChannels, listYoutubeCommunityDrafts, markYoutubeCommunityDraftPosted, saveYoutubeConnection, updateYoutubeVideoRecord } from "../services/youtubeAuth.mjs";
+import { generateYoutubeCommunityPost, generateYoutubeSeo } from "../services/youtubeSeo.mjs";
 import { uploadYoutubeThumbnail, uploadYoutubeVideo } from "../services/youtubeUpload.mjs";
 
 function splitNeighbourhoods(value) {
@@ -19,6 +19,29 @@ function safeJson(value, fallback) {
     } catch {
         return fallback;
     }
+}
+
+function guessImageType(file) {
+    const type = String(file?.type || "").trim();
+    if (type) return type;
+    const name = String(file?.name || "").toLowerCase();
+    if (name.endsWith(".png")) return "image/png";
+    if (name.endsWith(".webp")) return "image/webp";
+    return "image/jpeg";
+}
+
+async function saveCommunityImage(request, env, file) {
+    if (!file || typeof file === "string" || !file.size) return "";
+    const type = guessImageType(file);
+    const ext =
+        type.includes("png") ? ".png" :
+        type.includes("webp") ? ".webp" :
+        ".jpg";
+    const key = `gmb/youtube-community/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+    await env.MEDIA_BUCKET.put(key, await file.arrayBuffer(), {
+        httpMetadata: { contentType: type }
+    });
+    return `${new URL(request.url).origin}/media/${encodeURIComponent(key)}`;
 }
 
 export async function handleYoutubeRoute(request, env, helpers = {}) {
@@ -49,6 +72,60 @@ export async function handleYoutubeRoute(request, env, helpers = {}) {
         if (pathname === "/api/youtube/generate-seo" && request.method === "POST") {
             const body = await parseJsonBody(request);
             return jsonResponse({ ok: true, seo: generateYoutubeSeo(body) });
+        }
+
+        if (pathname === "/api/youtube/community/generate" && request.method === "POST") {
+            const body = await parseJsonBody(request);
+            return jsonResponse({ ok: true, communityPost: generateYoutubeCommunityPost(body) });
+        }
+
+        if (pathname === "/api/youtube/community/drafts" && request.method === "GET") {
+            const limit = searchParams.get("limit") || "50";
+            return jsonResponse({ drafts: await listYoutubeCommunityDrafts(env, limit) });
+        }
+
+        if (pathname === "/api/youtube/community/drafts" && request.method === "POST") {
+            const contentType = request.headers.get("Content-Type") || "";
+            let payload = {};
+            let imageFile = null;
+            if (contentType.toLowerCase().includes("multipart/form-data")) {
+                const form = await request.formData();
+                payload = {
+                    channelId: formString(form, "channelId"),
+                    service: formString(form, "service"),
+                    city: formString(form, "city"),
+                    neighbourhoods: splitNeighbourhoods(formString(form, "neighbourhoods")),
+                    postType: formString(form, "postType", "community_post"),
+                    websiteUrl: formString(form, "websiteUrl") || formString(form, "landingPageUrl"),
+                    utmUrl: formString(form, "utmUrl"),
+                    postText: formString(form, "postText"),
+                    imageUrl: formString(form, "imageUrl"),
+                    hashtags: safeJson(formString(form, "hashtags", "[]"), [])
+                };
+                imageFile = form.get("image");
+            } else {
+                payload = await parseJsonBody(request);
+            }
+
+            const channel = payload.channelId ? await getYoutubeChannelForUse(env, payload.channelId) : null;
+            const generated = payload.postText ? null : generateYoutubeCommunityPost(payload);
+            const postText = payload.postText || generated.postText;
+            const imageUrl = payload.imageUrl || await saveCommunityImage(request, env, imageFile);
+            const draftId = await insertYoutubeCommunityDraft(env, {
+                channelDbId: channel?.id || "",
+                channelId: channel?.channel_id || payload.channelId || "",
+                postText,
+                imageUrl,
+                service: payload.service || "",
+                city: payload.city || "",
+                neighbourhoods: splitNeighbourhoods(payload.neighbourhoods),
+                postType: payload.postType || generated?.postType || "community_post",
+                websiteUrl: payload.websiteUrl || generated?.websiteUrl || "",
+                utmUrl: payload.utmUrl || generated?.utmUrl || "",
+                hashtags: payload.hashtags || generated?.hashtags || [],
+                status: "DRAFT"
+            });
+            return jsonResponse({ ok: true, draftId, postText, imageUrl });
         }
 
         if (pathname === "/api/youtube/upload" && request.method === "POST") {
@@ -170,6 +247,12 @@ export async function handleYoutubeRoute(request, env, helpers = {}) {
                 serviceType: body.service || ""
             });
             return jsonResponse({ ok: true, result });
+        }
+
+        const markMatch = pathname.match(/^\/api\/youtube\/community\/drafts\/([^/]+)\/mark-posted$/);
+        if (markMatch && request.method === "POST") {
+            const draft = await markYoutubeCommunityDraftPosted(env, decodeURIComponent(markMatch[1]));
+            return jsonResponse({ ok: true, draft });
         }
 
         return null;
