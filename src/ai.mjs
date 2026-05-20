@@ -592,13 +592,15 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
 
     const roomContexts = [
         "living room",
-        "kitchen",
         "hallway",
         "primary bedroom",
         "whole main floor",
         "older condo",
         "family room",
         "entryway and staircase",
+        "basement rec room",
+        "dining room",
+        "upper hallway",
     ];
     const roomContext = roomContexts[Math.floor(Math.random() * roomContexts.length)];
 
@@ -634,6 +636,8 @@ export async function aiGenerateSummaryAndHashtags(env, profile, neighbourhood, 
         outcomeAngle +
         ". " +
         popcornAngle +
+        " Avoid kitchen examples for popcorn ceiling removal, especially for Ontario homes, because many kitchens are already smooth or renovated. " +
+        "Prefer living rooms, bedrooms, hallways, main floors, basements, dining rooms, or condos when giving room examples. " +
         " Mention the ceiling outcome in a way a homeowner would notice with their own eyes. " +
         "If you mention prep or removal, connect it to less mess, smoother results, repainting, brightness, or a more updated room. " :
         "Chosen variation cues for this draft: homeowner concern = " +
