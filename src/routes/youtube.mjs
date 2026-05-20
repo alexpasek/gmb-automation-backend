@@ -2,6 +2,7 @@ import { postToGmb } from "../gmb.mjs";
 import { buildYoutubeAuthUrl, getYoutubeChannelForUse, insertYoutubeCommunityDraft, insertYoutubeVideoRecord, listYoutubeChannels, listYoutubeCommunityDrafts, markYoutubeCommunityDraftPosted, saveYoutubeConnection, updateYoutubeVideoRecord } from "../services/youtubeAuth.mjs";
 import { generateYoutubeCommunityPost, generateYoutubeSeo } from "../services/youtubeSeo.mjs";
 import { uploadYoutubeThumbnail, uploadYoutubeVideo } from "../services/youtubeUpload.mjs";
+import { createYoutubeScheduledJob, listYoutubeScheduledJobs, runDueYoutubeScheduledJobs } from "../services/youtubeSchedule.mjs";
 
 function splitNeighbourhoods(value) {
     if (Array.isArray(value)) return value.map((x) => String(x || "").trim()).filter(Boolean);
@@ -44,6 +45,24 @@ async function saveCommunityImage(request, env, file) {
     return `${new URL(request.url).origin}/media/${encodeURIComponent(key)}`;
 }
 
+function guessVideoType(file) {
+    const type = String(file?.type || "").trim();
+    return type || "video/mp4";
+}
+
+async function saveScheduledMedia(env, file, folder, fallbackType) {
+    if (!file || typeof file === "string" || !file.size) return { key: "", contentType: "" };
+    const contentType = file.type || fallbackType || "application/octet-stream";
+    const name = String(file.name || "");
+    const extMatch = name.match(/\.[a-zA-Z0-9]+$/);
+    const ext = extMatch ? extMatch[0].toLowerCase() : "";
+    const key = `gmb/${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+    await env.MEDIA_BUCKET.put(key, await file.arrayBuffer(), {
+        httpMetadata: { contentType }
+    });
+    return { key, contentType };
+}
+
 export async function handleYoutubeRoute(request, env, helpers = {}) {
     const url = new URL(request.url);
     const { pathname, searchParams } = url;
@@ -82,6 +101,68 @@ export async function handleYoutubeRoute(request, env, helpers = {}) {
         if (pathname === "/api/youtube/community/drafts" && request.method === "GET") {
             const limit = searchParams.get("limit") || "50";
             return jsonResponse({ drafts: await listYoutubeCommunityDrafts(env, limit) });
+        }
+
+        if (pathname === "/api/youtube/scheduled" && request.method === "GET") {
+            return jsonResponse({ jobs: await listYoutubeScheduledJobs(env, searchParams.get("limit") || "50") });
+        }
+
+        if (pathname === "/api/youtube/scheduled/run-due" && request.method === "POST") {
+            return jsonResponse(await runDueYoutubeScheduledJobs(env, 5));
+        }
+
+        if (pathname === "/api/youtube/schedule" && request.method === "POST") {
+            const contentType = request.headers.get("Content-Type") || "";
+            let payload = {};
+            let videoFile = null;
+            let thumbnailFile = null;
+            if (contentType.toLowerCase().includes("multipart/form-data")) {
+                const form = await request.formData();
+                payload = {
+                    jobType: formString(form, "jobType", "VIDEO_UPLOAD"),
+                    channelId: formString(form, "channelId"),
+                    profileId: formString(form, "profileId"),
+                    runAt: formString(form, "runAt"),
+                    service: formString(form, "service"),
+                    city: formString(form, "city"),
+                    neighbourhoods: splitNeighbourhoods(formString(form, "neighbourhoods")),
+                    videoType: formString(form, "videoType"),
+                    postType: formString(form, "postType") || formString(form, "videoType"),
+                    landingPageUrl: formString(form, "landingPageUrl") || formString(form, "websiteUrl"),
+                    websiteUrl: formString(form, "websiteUrl") || formString(form, "landingPageUrl"),
+                    privacyStatus: formString(form, "privacyStatus", "unlisted"),
+                    crossPostGbp: formString(form, "crossPostGbp") === "true",
+                    postText: formString(form, "postText"),
+                    imageUrl: formString(form, "imageUrl"),
+                    seo: safeJson(formString(form, "seoJson", "null"), null)
+                };
+                videoFile = form.get("video");
+                thumbnailFile = form.get("thumbnail");
+            } else {
+                payload = await parseJsonBody(request);
+            }
+
+            const channel = payload.channelId ? await getYoutubeChannelForUse(env, payload.channelId) : null;
+            let videoMedia = { key: "", contentType: "" };
+            let thumbMedia = { key: "", contentType: "" };
+            if (payload.jobType === "VIDEO_UPLOAD") {
+                if (!videoFile || typeof videoFile === "string") return jsonResponse({ error: "Missing video file for scheduled upload" }, 400);
+                videoMedia = await saveScheduledMedia(env, videoFile, "youtube-scheduled/videos", guessVideoType(videoFile));
+                thumbMedia = await saveScheduledMedia(env, thumbnailFile, "youtube-scheduled/thumbnails", guessImageType(thumbnailFile));
+            }
+            const job = await createYoutubeScheduledJob(env, {
+                jobType: payload.jobType === "COMMUNITY_DRAFT" ? "COMMUNITY_DRAFT" : "VIDEO_UPLOAD",
+                channelDbId: channel?.id || "",
+                channelId: channel?.channel_id || payload.channelId || "",
+                profileId: payload.profileId || "",
+                runAt: payload.runAt,
+                payload,
+                videoR2Key: videoMedia.key,
+                videoContentType: videoMedia.contentType,
+                thumbnailR2Key: thumbMedia.key,
+                thumbnailContentType: thumbMedia.contentType
+            });
+            return jsonResponse({ ok: true, job });
         }
 
         if (pathname === "/api/youtube/community/drafts" && request.method === "POST") {

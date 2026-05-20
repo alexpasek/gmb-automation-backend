@@ -37,6 +37,7 @@ import {
 } from "./gmb.mjs";
 import { aiGenerateSummaryAndHashtags, pickNeighbourhood, safeJoinHashtags } from "./ai.mjs";
 import { handleYoutubeRoute } from "./routes/youtube.mjs";
+import { runDueYoutubeScheduledJobs } from "./services/youtubeSchedule.mjs";
 
 const VERSION = "1.0.0";
 
@@ -1997,6 +1998,7 @@ export default {
     async scheduled(controller, env, ctx) {
         try {
             await scheduledTick(env);
+            await runDueYoutubeScheduledJobs(env);
         } catch (e) {
             console.error("Scheduled error:", e);
         }
