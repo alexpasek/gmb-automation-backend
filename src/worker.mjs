@@ -36,6 +36,7 @@ import {
     fetchLocationBasics
 } from "./gmb.mjs";
 import { aiGenerateSummaryAndHashtags, pickNeighbourhood, safeJoinHashtags } from "./ai.mjs";
+import { handleYoutubeRoute } from "./routes/youtube.mjs";
 
 const VERSION = "1.0.0";
 
@@ -750,6 +751,15 @@ async function handleRequest(request, env, ctx) {
 
     if (request.method === "OPTIONS") {
         return optionsResponse();
+    }
+
+    if (pathname.startsWith("/api/google/") || pathname.startsWith("/api/youtube/")) {
+        const youtubeResponse = await handleYoutubeRoute(request, env, {
+            jsonResponse,
+            textResponse,
+            parseJsonBody
+        });
+        if (youtubeResponse) return youtubeResponse;
     }
 
     if (pathname === "/debug-env" && request.method === "GET") {
