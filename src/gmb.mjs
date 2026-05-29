@@ -482,6 +482,26 @@ export async function enqueueScheduledPhoto(env, payload) {
     return item;
 }
 
+export async function updateScheduledPhoto(env, id, updates = {}) {
+    const list = await getAllScheduledPhotos(env);
+    const current = list.find((it) => it && it.id === id);
+    if (!current) throw new Error("Scheduled photo not found");
+    const status = String(updates.status || current.status || "QUEUED").toUpperCase();
+    const allowedStatuses = new Set(["QUEUED", "PAUSED", "POSTED", "FAILED"]);
+    if (!allowedStatuses.has(status)) throw new Error("Invalid photo schedule status");
+    const updated = {
+        ...current,
+        profileId: updates.profileId || current.profileId,
+        runAt: updates.runAt ? new Date(updates.runAt).toISOString() : current.runAt,
+        body: updates.body ? normalizeBodyMedia(env, updates.body) : current.body,
+        status,
+        postedAt: status === "POSTED" ? updates.postedAt || current.postedAt || new Date().toISOString() : null,
+        lastError: status === "FAILED" ? updates.lastError || current.lastError || "" : ""
+    };
+    await upsertPhotoRow(env, updated);
+    return updated;
+}
+
 export async function saveScheduledPhotos(env, list) {
     await ensurePhotoTable(env);
     for (const item of list) {

@@ -20,6 +20,7 @@ import {
     commitScheduledPosts,
     getScheduledPhotos,
     enqueueScheduledPhoto,
+    updateScheduledPhoto,
     saveScheduledPhotos,
     deletePhotoScheduled,
     runDueScheduledPhotos,
@@ -1683,6 +1684,17 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true });
         } catch (e) {
             return jsonResponse({ error: e.message || "Delete failed" }, 400);
+        }
+    }
+
+    if (pathname.startsWith("/photo-scheduled/") && request.method === "PUT") {
+        const id = decodeURIComponent(pathname.split("/").pop() || "");
+        const body = await parseJsonBody(request);
+        try {
+            const item = await updateScheduledPhoto(env, id, body || {});
+            return jsonResponse({ ok: true, item });
+        } catch (e) {
+            return jsonResponse({ error: e.message || "Update failed" }, 400);
         }
     }
 
