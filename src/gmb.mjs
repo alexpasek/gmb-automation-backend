@@ -1157,6 +1157,14 @@ export async function appendPhotosToProfile(env, profileId, items = []) {
                 serviceType: String(entry.serviceType || ""),
                 serviceTopicId: String(entry.serviceTopicId || ""),
                 captions: Array.isArray(entry.captions) ? entry.captions.slice(0, 5) : [],
+                geo: entry.geo && typeof entry.geo === "object" ? {
+                    lat: entry.geo.lat ?? "",
+                    lng: entry.geo.lng ?? "",
+                    city: String(entry.geo.city || ""),
+                    neighbourhood: String(entry.geo.neighbourhood || ""),
+                    source: String(entry.geo.source || ""),
+                    exifGpsStamped: !!entry.geo.exifGpsStamped
+                } : null,
                 addedAt: entry.addedAt || new Date().toISOString()
             };
         })

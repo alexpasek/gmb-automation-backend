@@ -48,6 +48,21 @@ const CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-agent-api-key"
 };
 
+const CITY_GEO_DEFAULTS = {
+    mississauga: { lat: 43.589, lng: -79.6441 },
+    toronto: { lat: 43.6532, lng: -79.3832 },
+    brampton: { lat: 43.7315, lng: -79.7624 },
+    oakville: { lat: 43.4675, lng: -79.6877 },
+    burlington: { lat: 43.3255, lng: -79.799 },
+    hamilton: { lat: 43.2557, lng: -79.8711 },
+    milton: { lat: 43.5183, lng: -79.8774 },
+    etobicoke: { lat: 43.6205, lng: -79.5132 },
+    vaughan: { lat: 43.8563, lng: -79.5085 },
+    markham: { lat: 43.8561, lng: -79.337 },
+    "richmond hill": { lat: 43.8828, lng: -79.4403 },
+    calgary: { lat: 51.0447, lng: -114.0719 }
+};
+
 function jsonResponse(obj, status = 200) {
     return new Response(JSON.stringify(obj), {
         status,
@@ -131,6 +146,33 @@ function getAgentOpenApiSchema(request) {
         },
         required
     });
+    const geoProperties = {
+        city: { type: "string", description: "City to use in the prompt and for fallback geotagging when known." },
+        cities: { type: "array", items: { type: "string" }, description: "Optional per-image city list." },
+        neighbourhood: { type: "string" },
+        neighbourhoods: { type: "array", items: { type: "string" }, description: "Optional per-image neighbourhood list." },
+        lat: { type: "number", description: "Latitude to embed into JPEG EXIF GPS metadata." },
+        lng: { type: "number", description: "Longitude to embed into JPEG EXIF GPS metadata." },
+        latitude: { type: "number" },
+        longitude: { type: "number" },
+        photoLat: { type: "number" },
+        photoLng: { type: "number" },
+        geoLocations: {
+            type: "array",
+            description: "Per-image geotags. Each generated/uploaded JPEG is stamped with matching EXIF GPS coordinates.",
+            items: {
+                type: "object",
+                properties: {
+                    city: { type: "string" },
+                    neighbourhood: { type: "string" },
+                    lat: { type: "number" },
+                    lng: { type: "number" },
+                    latitude: { type: "number" },
+                    longitude: { type: "number" }
+                }
+            }
+        }
+    };
     return {
         openapi: "3.1.0",
         info: {
@@ -185,7 +227,8 @@ function getAgentOpenApiSchema(request) {
                                     filename: { type: "string" },
                                     folder: { type: "string", default: "ai" },
                                     addToProfile: { type: "boolean", default: true },
-                                    serviceType: { type: "string" }
+                                    serviceType: { type: "string" },
+                                    ...geoProperties
                                 })
                             }
                         }
@@ -209,7 +252,8 @@ function getAgentOpenApiSchema(request) {
                                     size: { type: "string", default: "1536x1024" },
                                     quality: { type: "string", default: "high" },
                                     folder: { type: "string", default: "ai" },
-                                    addToProfile: { type: "boolean", default: true }
+                                    addToProfile: { type: "boolean", default: true },
+                                    ...geoProperties
                                 })
                             }
                         }
@@ -234,7 +278,8 @@ function getAgentOpenApiSchema(request) {
                                     photoOnly: { type: "boolean", default: false },
                                     category: { type: "string", default: "ADDITIONAL" },
                                     cta: { type: "string" },
-                                    linkUrl: { type: "string" }
+                                    linkUrl: { type: "string" },
+                                    ...geoProperties
                                 })
                             }
                         }
@@ -261,7 +306,8 @@ function getAgentOpenApiSchema(request) {
                                     mediaUrls: { type: "array", items: { type: "string" } },
                                     photoOnly: { type: "boolean", default: false },
                                     category: { type: "string", default: "ADDITIONAL" },
-                                    autoGenerateSummary: { type: "boolean", default: true }
+                                    autoGenerateSummary: { type: "boolean", default: true },
+                                    ...geoProperties
                                 })
                             }
                         }
@@ -289,7 +335,8 @@ function getAgentOpenApiSchema(request) {
                                     generateImages: { type: "boolean", default: false },
                                     imageCount: { type: "integer", minimum: 1, maximum: 30, default: 7 },
                                     size: { type: "string", default: "1536x1024" },
-                                    quality: { type: "string", default: "high" }
+                                    quality: { type: "string", default: "high" },
+                                    ...geoProperties
                                 })
                             }
                         }
@@ -309,6 +356,163 @@ function decodeBase64ToArrayBuffer(base64) {
         bytes[i] = binary.charCodeAt(i);
     }
     return bytes.buffer;
+}
+
+function concatUint8Arrays(parts = []) {
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) {
+        out.set(part, offset);
+        offset += part.length;
+    }
+    return out;
+}
+
+function textBytes(text = "") {
+    return new TextEncoder().encode(String(text || ""));
+}
+
+function rationalBytes(value, denominator = 1000000) {
+    const v = Math.max(0, Math.round(Math.abs(value) * denominator));
+    return [v >>> 24, (v >>> 16) & 255, (v >>> 8) & 255, v & 255, denominator >>> 24, (denominator >>> 16) & 255, (denominator >>> 8) & 255, denominator & 255];
+}
+
+function dmsRationals(value) {
+    const abs = Math.abs(value);
+    const deg = Math.floor(abs);
+    const minFloat = (abs - deg) * 60;
+    const min = Math.floor(minFloat);
+    const sec = (minFloat - min) * 60;
+    return [
+        ...rationalBytes(deg, 1),
+        ...rationalBytes(min, 1),
+        ...rationalBytes(sec, 1000000)
+    ];
+}
+
+function tiffAsciiEntry(tag, value = "", valueOffset = 0) {
+    const bytes = textBytes(`${value}\0`);
+    const count = bytes.length;
+    const valueField = count <= 4 ?
+        [...bytes, 0, 0, 0, 0].slice(0, 4) :
+        [valueOffset >>> 24, (valueOffset >>> 16) & 255, (valueOffset >>> 8) & 255, valueOffset & 255];
+    return [
+        (tag >>> 8) & 255, tag & 255,
+        0, 2,
+        count >>> 24, (count >>> 16) & 255, (count >>> 8) & 255, count & 255,
+        ...valueField
+    ];
+}
+
+function tiffLongEntry(tag, value = 0) {
+    return [
+        (tag >>> 8) & 255, tag & 255,
+        0, 4,
+        0, 0, 0, 1,
+        value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255
+    ];
+}
+
+function tiffRationalEntry(tag, count, valueOffset) {
+    return [
+        (tag >>> 8) & 255, tag & 255,
+        0, 5,
+        count >>> 24, (count >>> 16) & 255, (count >>> 8) & 255, count & 255,
+        valueOffset >>> 24, (valueOffset >>> 16) & 255, (valueOffset >>> 8) & 255, valueOffset & 255
+    ];
+}
+
+function jpegHasExif(bytes) {
+    let offset = 2;
+    while (offset + 4 < bytes.length && bytes[offset] === 255) {
+        const marker = bytes[offset + 1];
+        const len = (bytes[offset + 2] << 8) | bytes[offset + 3];
+        if (marker === 225 && offset + 10 < bytes.length) {
+            return bytes[offset + 4] === 69 && bytes[offset + 5] === 120 && bytes[offset + 6] === 105 && bytes[offset + 7] === 102;
+        }
+        if (marker === 218 || marker === 217 || len < 2) break;
+        offset += 2 + len;
+    }
+    return false;
+}
+
+function buildGpsExifSegment(meta = {}) {
+    const lat = parseFloat(meta.lat);
+    const lng = parseFloat(meta.lng);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+    const desc = [
+            meta.businessName,
+            meta.city,
+            meta.neighbourhood,
+            meta.serviceType || meta.serviceKeywords,
+            meta.categoryKeywords,
+            meta.website
+        ]
+        .map((s) => String(s || "").trim())
+        .filter(Boolean)
+        .join(" | ");
+
+    const descBytes = desc ? textBytes(`${desc}\0`) : new Uint8Array();
+    const ifd0Count = desc ? 3 : 2;
+    const ifd0Start = 8;
+    const ifd0Size = 2 + ifd0Count * 12 + 4;
+    const gpsIfdOffset = ifd0Start + ifd0Size + descBytes.length;
+    const gpsCount = 4;
+    const gpsIfdSize = 2 + gpsCount * 12 + 4;
+    const gpsDataOffset = gpsIfdOffset + gpsIfdSize;
+    const latOffset = gpsDataOffset;
+    const lngOffset = latOffset + 24;
+
+    const ifd0Entries = [];
+    if (desc) {
+        ifd0Entries.push(tiffAsciiEntry(0x010e, desc, ifd0Start + ifd0Size));
+    }
+    ifd0Entries.push(tiffAsciiEntry(0x013b, "AI"));
+    ifd0Entries.push(tiffLongEntry(0x8825, gpsIfdOffset));
+
+    const gpsEntries = [
+        tiffAsciiEntry(0x0001, lat >= 0 ? "N" : "S"),
+        tiffRationalEntry(0x0002, 3, latOffset),
+        tiffAsciiEntry(0x0003, lng >= 0 ? "E" : "W"),
+        tiffRationalEntry(0x0004, 3, lngOffset)
+    ];
+
+    const tiff = concatUint8Arrays([
+        new Uint8Array([0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08]),
+        new Uint8Array([(ifd0Entries.length >>> 8) & 255, ifd0Entries.length & 255]),
+        ...ifd0Entries.map((entry) => new Uint8Array(entry)),
+        new Uint8Array([0, 0, 0, 0]),
+        descBytes,
+        new Uint8Array([(gpsEntries.length >>> 8) & 255, gpsEntries.length & 255]),
+        ...gpsEntries.map((entry) => new Uint8Array(entry)),
+        new Uint8Array([0, 0, 0, 0]),
+        new Uint8Array(dmsRationals(lat)),
+        new Uint8Array(dmsRationals(lng))
+    ]);
+    const payload = concatUint8Arrays([textBytes("Exif\0\0"), tiff]);
+    const len = payload.length + 2;
+    if (len > 65535) return null;
+    return concatUint8Arrays([
+        new Uint8Array([0xff, 0xe1, (len >>> 8) & 255, len & 255]),
+        payload
+    ]);
+}
+
+function embedGpsExifInJpeg(arrayBuffer, meta = {}) {
+    const bytes = new Uint8Array(arrayBuffer);
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+        return { arrayBuffer, stamped: false, reason: "not_jpeg" };
+    }
+    if (jpegHasExif(bytes)) {
+        return { arrayBuffer, stamped: false, reason: "existing_exif" };
+    }
+    const segment = buildGpsExifSegment(meta);
+    if (!segment) {
+        return { arrayBuffer, stamped: false, reason: "missing_geo" };
+    }
+    const out = concatUint8Arrays([bytes.slice(0, 2), segment, bytes.slice(2)]);
+    return { arrayBuffer: out.buffer, stamped: true };
 }
 
 function getAgentAuthError(request, env) {
@@ -355,10 +559,95 @@ async function saveMediaBytes(request, env, arrayBuffer, options = {}) {
         "-" +
         Math.random().toString(36).slice(2) +
         filenameExt;
-    await env.MEDIA_BUCKET.put(key, arrayBuffer, {
-        httpMetadata: { contentType }
-    });
+    const putOptions = { httpMetadata: { contentType } };
+    if (options.customMetadata && typeof options.customMetadata === "object") {
+        putOptions.customMetadata = options.customMetadata;
+    }
+    await env.MEDIA_BUCKET.put(key, arrayBuffer, putOptions);
     return { key, url: originMediaUrl(request, key) };
+}
+
+function cityGeoDefault(city = "") {
+    const key = String(city || "").trim().toLowerCase();
+    return CITY_GEO_DEFAULTS[key] || null;
+}
+
+function bodyValueAt(body = {}, names = [], index = 0) {
+    for (const name of names) {
+        const val = body[name];
+        if (Array.isArray(val)) {
+            if (val[index] != null) return val[index];
+            if (val.length) return val[index % val.length];
+        } else if (val != null && val !== "") {
+            return val;
+        }
+    }
+    return "";
+}
+
+function resolveAgentGeo(profile, body = {}, index = 0) {
+    const geoList = Array.isArray(body.geoLocations) ? body.geoLocations :
+        Array.isArray(body.geotags) ? body.geotags :
+        Array.isArray(body.coordinates) ? body.coordinates : [];
+    const geoEntry = geoList.length ? (geoList[index] || geoList[index % geoList.length] || {}) : {};
+    const city = String(
+        geoEntry.city ||
+        bodyValueAt(body, ["cities", "city"], index) ||
+        profile.city ||
+        ""
+    ).trim();
+    const neighbourhood = String(
+        geoEntry.neighbourhood ||
+        bodyValueAt(body, ["neighbourhoods", "neighborhoods", "neighbourhood", "neighborhood"], index) ||
+        ""
+    ).trim();
+    const rawLat =
+        geoEntry.lat ?? geoEntry.latitude ??
+        bodyValueAt(body, ["latitudes", "latitude", "lat", "photoLat"], index);
+    const rawLng =
+        geoEntry.lng ?? geoEntry.lon ?? geoEntry.longitude ??
+        bodyValueAt(body, ["longitudes", "longitude", "lng", "lon", "photoLng"], index);
+    let lat = parseFloat(rawLat);
+    let lng = parseFloat(rawLng);
+    let source = "provided";
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        const fallback = cityGeoDefault(city);
+        if (fallback) {
+            lat = fallback.lat;
+            lng = fallback.lng;
+            source = "city_default";
+        }
+    }
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        return {
+            city,
+            neighbourhood,
+            lat: "",
+            lng: "",
+            hasGeo: false,
+            source: "none"
+        };
+    }
+    return {
+        city,
+        neighbourhood,
+        lat: +lat.toFixed(6),
+        lng: +lng.toFixed(6),
+        hasGeo: true,
+        source
+    };
+}
+
+function buildAgentExifMeta(profile, body = {}, index = 0) {
+    const geo = resolveAgentGeo(profile || {}, body, index);
+    return {
+        ...geo,
+        businessName: profile?.businessName || body.businessName || "",
+        serviceType: body.serviceType || body.theme || body.topic || "",
+        serviceKeywords: body.serviceKeywords || body.keywords || body.serviceType || "",
+        categoryKeywords: body.categoryKeywords || body.categories || "",
+        website: body.website || body.websiteUrl || profile?.landingUrl || profile?.websiteUri || ""
+    };
 }
 
 async function generateAiImageToGallery(request, env, body = {}) {
@@ -374,16 +663,40 @@ async function generateAiImageToGallery(request, env, body = {}) {
     const folder = sanitizeFolder(body.folder || "ai") || "ai";
 
     async function saveImageBytes(arrayBuf, extra = {}) {
-        const saved = await saveMediaBytes(request, env, arrayBuf, {
+        const exifMeta = body.exifMeta || body.geoMeta || null;
+        let bytesToSave = arrayBuf;
+        let exif = { stamped: false, reason: "not_requested" };
+        if (exifMeta && exifMeta.hasGeo !== false) {
+            exif = embedGpsExifInJpeg(arrayBuf, exifMeta);
+            bytesToSave = exif.arrayBuffer;
+        }
+        const saved = await saveMediaBytes(request, env, bytesToSave, {
             folder,
             filename: ".jpg",
-            contentType: "image/jpeg"
+            contentType: "image/jpeg",
+            customMetadata: exifMeta && exifMeta.hasGeo !== false ? {
+                gpsLat: String(exifMeta.lat || ""),
+                gpsLng: String(exifMeta.lng || ""),
+                city: String(exifMeta.city || ""),
+                neighbourhood: String(exifMeta.neighbourhood || ""),
+                exifGpsStamped: exif.stamped ? "true" : "false",
+                exifGpsReason: exif.reason || ""
+            } : undefined
         });
         return {
             ...saved,
             prompt,
             size: extra.size || requestedSize,
-            quality: extra.quality || requestedQuality
+            quality: extra.quality || requestedQuality,
+            geo: exifMeta && exifMeta.hasGeo !== false ? {
+                lat: exifMeta.lat,
+                lng: exifMeta.lng,
+                city: exifMeta.city || "",
+                neighbourhood: exifMeta.neighbourhood || "",
+                source: exifMeta.source || "",
+                exifGpsStamped: !!exif.stamped,
+                exifGpsReason: exif.reason || ""
+            } : null
         };
     }
 
@@ -542,11 +855,12 @@ function findAgentProfile(profiles, body = {}) {
 
 function buildAgentImagePrompt(profile, body = {}, index = 0) {
     const service = String(body.serviceType || body.theme || body.topic || body.prompt || "home renovation service").trim();
-    const city = String(body.city || profile.city || "").trim();
+    const geo = resolveAgentGeo(profile || {}, body, index);
+    const city = String(geo.city || profile.city || "").trim();
     const neighbourhoods = Array.isArray(profile.defaults?.photoNeighbourhoods) ?
         profile.defaults.photoNeighbourhoods :
         Array.isArray(profile.neighbourhoods) ? profile.neighbourhoods : [];
-    const neighbourhood = String(body.neighbourhood || neighbourhoods[index % Math.max(1, neighbourhoods.length)] || "").trim();
+    const neighbourhood = String(geo.neighbourhood || neighbourhoods[index % Math.max(1, neighbourhoods.length)] || "").trim();
     if (body.prompt) return String(body.prompt).trim();
     const serviceSignals = `${service} ${body.topic || ""} ${body.theme || ""}`.toLowerCase();
     const popcornFocus =
@@ -895,10 +1209,28 @@ async function handleRequest(request, env, ctx) {
                 ext = decoded.ext;
             }
 
-            const saved = await saveMediaBytes(request, env, bytes, {
+            const exifMeta = profile ? buildAgentExifMeta(profile, body, 0) : buildAgentExifMeta({}, body, 0);
+            let bytesToSave = bytes;
+            let exif = { stamped: false, reason: "not_requested" };
+            if (exifMeta.hasGeo && /jpe?g/i.test(mimeType || "")) {
+                exif = embedGpsExifInJpeg(bytes, exifMeta);
+                bytesToSave = exif.arrayBuffer;
+                mimeType = "image/jpeg";
+                ext = ".jpg";
+            }
+
+            const saved = await saveMediaBytes(request, env, bytesToSave, {
                 folder: body.folder || "ai",
-                filename: body.filename || ext,
-                contentType: mimeType
+                filename: exif.stamped ? ".jpg" : body.filename || ext,
+                contentType: mimeType,
+                customMetadata: exifMeta.hasGeo ? {
+                    gpsLat: String(exifMeta.lat || ""),
+                    gpsLng: String(exifMeta.lng || ""),
+                    city: String(exifMeta.city || ""),
+                    neighbourhood: String(exifMeta.neighbourhood || ""),
+                    exifGpsStamped: exif.stamped ? "true" : "false",
+                    exifGpsReason: exif.reason || ""
+                } : undefined
             });
 
             let updatedProfile = null;
@@ -914,6 +1246,15 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({
                 ok: true,
                 ...saved,
+                geo: exifMeta.hasGeo ? {
+                    lat: exifMeta.lat,
+                    lng: exifMeta.lng,
+                    city: exifMeta.city || "",
+                    neighbourhood: exifMeta.neighbourhood || "",
+                    source: exifMeta.source || "",
+                    exifGpsStamped: !!exif.stamped,
+                    exifGpsReason: exif.reason || ""
+                } : null,
                 profileId: profile?.profileId || "",
                 addedToProfile: !!updatedProfile
             });
@@ -931,7 +1272,8 @@ async function handleRequest(request, env, ctx) {
                 const item = await generateAiImageToGallery(request, env, {
                     ...body,
                     prompt,
-                    folder: body.folder || "ai"
+                    folder: body.folder || "ai",
+                    exifMeta: buildAgentExifMeta(profile, body, i)
                 });
                 generated.push(item);
             }
@@ -939,7 +1281,8 @@ async function handleRequest(request, env, ctx) {
                 await appendPhotosToProfile(env, profile.profileId, generated.map((item) => ({
                     url: item.url,
                     serviceType: body.serviceType || body.theme || body.topic || "",
-                    serviceTopicId: body.serviceTopicId || ""
+                    serviceTopicId: body.serviceTopicId || "",
+                    geo: item.geo || null
                 })));
             }
             return jsonResponse({
@@ -961,14 +1304,16 @@ async function handleRequest(request, env, ctx) {
                 generated = await generateAiImageToGallery(request, env, {
                     ...body,
                     prompt: buildAgentImagePrompt(profile, body, 0),
-                    folder: body.folder || "ai"
+                    folder: body.folder || "ai",
+                    exifMeta: buildAgentExifMeta(profile, body, 0)
                 });
                 mediaUrl = generated.url;
                 if (body.addToProfile !== false) {
                     await appendPhotosToProfile(env, profile.profileId, [{
                         url: mediaUrl,
                         serviceType: body.serviceType || body.theme || body.topic || "",
-                        serviceTopicId: body.serviceTopicId || ""
+                        serviceTopicId: body.serviceTopicId || "",
+                        geo: generated?.geo || null
                     }]);
                 }
             }
@@ -1010,7 +1355,8 @@ async function handleRequest(request, env, ctx) {
                     const item = await generateAiImageToGallery(request, env, {
                         ...body,
                         prompt,
-                        folder: body.folder || "ai"
+                        folder: body.folder || "ai",
+                        exifMeta: buildAgentExifMeta(profile, body, i)
                     });
                     generated.push(item);
                     mediaUrl = item.url;
@@ -1054,7 +1400,8 @@ async function handleRequest(request, env, ctx) {
                 await appendPhotosToProfile(env, profile.profileId, generated.map((item) => ({
                     url: item.url,
                     serviceType: body.serviceType || body.theme || body.topic || "",
-                    serviceTopicId: body.serviceTopicId || ""
+                    serviceTopicId: body.serviceTopicId || "",
+                    geo: item.geo || null
                 })));
             }
 
@@ -1094,14 +1441,16 @@ async function handleRequest(request, env, ctx) {
                     const item = await generateAiImageToGallery(request, env, {
                         ...body,
                         prompt,
-                        folder: body.folder || "ai"
+                        folder: body.folder || "ai",
+                        exifMeta: buildAgentExifMeta(profile, body, i)
                     });
                     generated.push(item);
                 }
                 await appendPhotosToProfile(env, profile.profileId, generated.map((item) => ({
                     url: item.url,
                     serviceType: body.serviceType || body.theme || body.topic || "",
-                    serviceTopicId: body.serviceTopicId || ""
+                    serviceTopicId: body.serviceTopicId || "",
+                    geo: item.geo || null
                 })));
             }
 
