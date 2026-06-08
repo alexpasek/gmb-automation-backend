@@ -548,6 +548,40 @@ function buildAgentImagePrompt(profile, body = {}, index = 0) {
         Array.isArray(profile.neighbourhoods) ? profile.neighbourhoods : [];
     const neighbourhood = String(body.neighbourhood || neighbourhoods[index % Math.max(1, neighbourhoods.length)] || "").trim();
     if (body.prompt) return String(body.prompt).trim();
+    const serviceSignals = `${service} ${body.topic || ""} ${body.theme || ""}`.toLowerCase();
+    const popcornFocus =
+        serviceSignals.includes("popcorn") ||
+        serviceSignals.includes("ceiling removal") ||
+        serviceSignals.includes("stucco ceiling") ||
+        serviceSignals.includes("ceiling texture");
+    const headline = popcornFocus ? "Popcorn Ceiling Removal" : service;
+    const locationLine = city ? city : "";
+    const popcornScenes = [
+        "top half shows a protected residential room during popcorn ceiling removal, ceiling partly textured and partly scraped smooth, contractor using a vacuum sander or scraper, plastic sheeting, blue masking tape, drop cloths, ladder, and natural window light",
+        "top half shows a close upward angle of active popcorn ceiling removal with dust-control plastic, vacuum hose, pole sander, compound bucket, work light, and a clear transition from bumpy texture to smooth ceiling",
+        "bottom half shows the finished transformed room after popcorn ceiling removal: smooth bright ceiling, clean wall edges, modern living room, recessed lights or natural window light, furniture uncovered, clean professional result",
+        "split project-photo composition: removal prep and scraping above, smooth finished ceiling below, realistic contractor tools and ordinary residential details visible"
+    ];
+    const selectedPopcornScene = popcornScenes[index % popcornScenes.length];
+    if (popcornFocus) {
+        return [
+            "Create a square social media marketing image for a Google Business Profile post, in the same style as a professional contractor before-and-after service graphic.",
+            "Use ultra-realistic human-shot residential renovation photography, not illustration, not 3D render, not glossy stock photography.",
+            `Required service keyword text on the image, spelled exactly: "${headline}".`,
+            locationLine
+                ? `Add a second readable location line on the image, spelled exactly: "${locationLine}".`
+                : "Do not invent a city; if no city is provided, use only the service keyword text.",
+            `Business context: ${profile.businessName || "local contractor"}.`,
+            `Location context: ${city}${neighbourhood ? `, ${neighbourhood}` : ""}.`,
+            `Required visual scene: ${selectedPopcornScene}.`,
+            "Layout: image should feel like a polished contractor post, with removal/prep photo area above, finished smooth-ceiling room below, and a clean centered banner overlay between them.",
+            "Text treatment: large bold white service text on a dark navy rectangular banner; city line below on a warm beige or gold rectangle; high contrast; crisp readable lettering; no misspellings.",
+            "Optional small Canadian maple leaf icon beside the city line only if it looks clean and does not hurt readability.",
+            "Add a short premium tagline below the banner only if it is readable: CLEAN. MODERN. TRANSFORMED.",
+            "Make popcorn ceiling removal instantly recognizable: bumpy/stucco texture, scraped smooth ceiling, dust protection, ladder, scraper or sander, vacuum hose, masking tape, compound bucket, and clean finished ceiling should be visible.",
+            "Avoid fake logos, watermarks, business cards, random unreadable text, warped rooms, impossible tools, extra fingers, distorted ladders, clear customer faces, and overly perfect AI-looking surfaces."
+        ].join(" ");
+    }
     return [
         "Create an ultra-realistic human-shot contractor project photo for Google Business Profile.",
         `Business: ${profile.businessName || "local contractor"}.`,
