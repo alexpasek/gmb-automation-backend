@@ -64,6 +64,64 @@ function randomId(prefix = "svc") {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function decodeBase64ToArrayBuffer(base64) {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
+
+async function generateScheduledPendingMedia(env, profile, body = {}) {
+    if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set");
+    if (!env.MEDIA_BUCKET) throw new Error("MEDIA_BUCKET not set");
+    const service = String(body.serviceType || body.theme || "popcorn ceiling removal").trim();
+    const city = String(body.city || profile.city || "").trim();
+    const prompt = String(body.prompt || "").trim() || [
+        "Create an ultra-realistic contractor photo for a Google Business Profile post.",
+        `Service: ${service}.`,
+        city ? `City: ${city}.` : "",
+        "Show popcorn ceiling removal or ceiling smoothing clearly: protected room, ladder, scraper or sander, vacuum hose, bumpy ceiling texture, and smooth finished ceiling result.",
+        "No pest control, insects, rodents, traps, unrelated services, fake logos, or watermarks."
+    ].filter(Boolean).join(" ");
+    const model = String(body.model || env.OPENAI_IMAGE_MODEL || "gpt-image-1.5").trim();
+    const size = String(body.size || "1536x1024").trim();
+    const quality = String(body.quality || "high").trim();
+    const resp = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model,
+            prompt,
+            size,
+            quality,
+            output_format: "jpeg",
+            output_compression: 88
+        })
+    });
+    if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        throw new Error(errText || `OpenAI ${model} image request failed`);
+    }
+    const data = await resp.json();
+    const base64Image = data?.data?.[0]?.b64_json;
+    if (!base64Image) throw new Error(`No image bytes returned by ${model}`);
+    const key = `ai/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+    await env.MEDIA_BUCKET.put(key, decodeBase64ToArrayBuffer(base64Image), {
+        httpMetadata: { contentType: "image/jpeg" },
+        customMetadata: {
+            generatedFor: "scheduled-post-mediaPending",
+            profileId: profile.profileId || "",
+            city,
+            serviceType: service
+        }
+    });
+    return `${DEFAULT_MEDIA_BASE}/media/${encodeURIComponent(key)}`;
+}
+
 function normalizeServiceTopicsList(list = [], desiredDefaultId = "") {
     if (!Array.isArray(list)) return { items: [], defaultId: "" };
     const items = [];
@@ -1779,6 +1837,14 @@ export async function postToGmb(env, body) {
     const siteCandidate = basics.websiteUri || profile.landingUrl || "";
     let mediaUrlRaw = ensureAbsoluteMediaUrl(env, (body && body.mediaUrl) || defaults.mediaUrl || "");
     let usedFromPool = false;
+
+    if (!mediaUrlRaw && body && body.mediaPending) {
+        mediaUrlRaw = await generateScheduledPendingMedia(env, profile, body);
+        console.log("[scheduled-post] Generated pending media", {
+            profileId,
+            mediaUrl: mediaUrlRaw
+        });
+    }
 
     const ctaObj = buildCallToAction(ctaCode, linkUrl, basics, profile, phoneOverride);
     // Safety: CALL should never include a url to satisfy GBP validation

@@ -191,6 +191,15 @@ function getAgentOpenApiSchema(request) {
                 longitude: { type: "number" }
             }
         },
+        geoText: {
+            type: "string",
+            description: "Single-image geotag as text. Format: city|lat|lng or city,lat,lng. Use this if numeric coordinate fields are rejected by the agent runtime."
+        },
+        geoTexts: {
+            type: "array",
+            description: "Per-image geotags as text. Each item format: city|lat|lng or city,lat,lng.",
+            items: { type: "string" }
+        },
         geoLocations: {
             type: "array",
             description: "Per-image geotags. Each generated/uploaded JPEG is stamped with matching EXIF GPS coordinates.",
@@ -341,6 +350,11 @@ function getAgentOpenApiSchema(request) {
                                     photoOnly: { type: "boolean", default: false },
                                     category: { type: "string", default: "ADDITIONAL" },
                                     autoGenerateSummary: { type: "boolean", default: true },
+                                    background: {
+                                        type: "boolean",
+                                        default: true,
+                                        description: "Return quickly and finish image generation/scheduling in the background. Recommended for multi-image schedules to avoid agent action timeouts."
+                                    },
                                     ...geoProperties
                                 })
                             }
@@ -619,10 +633,26 @@ function bodyValueAt(body = {}, names = [], index = 0) {
     return "";
 }
 
+function parseGeoText(value = "") {
+    const raw = String(value || "").trim();
+    if (!raw) return {};
+    const parts = raw.split(/[|,]/).map((part) => part.trim()).filter(Boolean);
+    if (parts.length < 3) return {};
+    const latIndex = parts.findIndex((part) => /^-?\d+(\.\d+)?$/.test(part));
+    if (latIndex === -1 || latIndex + 1 >= parts.length) return {};
+    return {
+        city: parts.slice(0, latIndex).join(", "),
+        lat: parts[latIndex],
+        lng: parts[latIndex + 1],
+        neighbourhood: parts.slice(latIndex + 2).join(", ")
+    };
+}
+
 function resolveAgentGeo(profile, body = {}, index = 0) {
     const geoList = Array.isArray(body.geoLocations) ? body.geoLocations :
         Array.isArray(body.geotags) ? body.geotags :
         Array.isArray(body.coordinates) ? body.coordinates : [];
+    const textGeo = parseGeoText(bodyValueAt(body, ["geoTexts", "geoText", "geoLocationText"], index));
     const geoEntry = geoList.length ?
         (geoList[index] || geoList[index % geoList.length] || {}) :
         (
@@ -630,7 +660,7 @@ function resolveAgentGeo(profile, body = {}, index = 0) {
             body.geotag && typeof body.geotag === "object" ? body.geotag :
             body.gpsExif && typeof body.gpsExif === "object" ? body.gpsExif :
             body.coordinates && typeof body.coordinates === "object" && !Array.isArray(body.coordinates) ? body.coordinates :
-            {}
+            textGeo
         );
     const city = String(
         geoEntry.city ||
@@ -1400,74 +1430,195 @@ async function handleRequest(request, env, ctx) {
             const profile = findAgentProfile(profiles, body);
             const count = Math.max(1, Math.min(30, parseInt(body.days || body.count, 10) || 7));
             const mediaUrls = Array.isArray(body.mediaUrls) ? body.mediaUrls.slice() : [];
-            const generated = [];
-            const scheduled = [];
+            const workId = crypto.randomUUID();
+            const scheduleWork = async () => {
+                const generated = [];
+                const scheduled = [];
 
-            for (let i = 0; i < count; i++) {
-                let mediaUrl = ensureAbsoluteMediaUrl(env, mediaUrls[i] || mediaUrls[i % Math.max(1, mediaUrls.length)] || "");
-                if (body.generateImages !== false && (!mediaUrl || body.generateImageEachDay !== false)) {
-                    const prompt = buildAgentImagePrompt(profile, body, i);
-                    // eslint-disable-next-line no-await-in-loop
-                    const item = await generateAiImageToGallery(request, env, {
-                        ...body,
-                        prompt,
-                        folder: body.folder || "ai",
-                        exifMeta: buildAgentExifMeta(profile, body, i)
-                    });
-                    generated.push(item);
-                    mediaUrl = item.url;
-                }
-
-                if (!mediaUrl) {
-                    return jsonResponse({ error: "No mediaUrl available; provide mediaUrls or allow generateImages" }, 400);
-                }
-
-                const runAt = buildDailyRunAt(i, body);
-                if (body.photoOnly) {
-                    // eslint-disable-next-line no-await-in-loop
-                    const item = await enqueueScheduledPhoto(env, {
-                        profileId: profile.profileId,
-                        runAt,
-                        body: {
-                            mediaUrl,
-                            caption: body.caption || "",
-                            category: body.category || "ADDITIONAL"
-                        }
-                    });
-                    scheduled.push(item);
-                } else {
-                    // eslint-disable-next-line no-await-in-loop
-                    const item = await enqueueScheduledPost(env, {
-                        profileId: profile.profileId,
-                        runAt,
-                        body: {
+                for (let i = 0; i < count; i++) {
+                    let mediaUrl = ensureAbsoluteMediaUrl(env, mediaUrls[i] || mediaUrls[i % Math.max(1, mediaUrls.length)] || "");
+                    if (body.generateImages !== false && (!mediaUrl || body.generateImageEachDay !== false)) {
+                        const prompt = buildAgentImagePrompt(profile, body, i);
+                        // eslint-disable-next-line no-await-in-loop
+                        const item = await generateAiImageToGallery(request, env, {
                             ...body,
+                            prompt,
+                            folder: body.folder || "ai",
+                            exifMeta: buildAgentExifMeta(profile, body, i)
+                        });
+                        generated.push(item);
+                        mediaUrl = item.url;
+                    }
+
+                    if (!mediaUrl) {
+                        throw new Error("No mediaUrl available; provide mediaUrls or allow generateImages");
+                    }
+
+                    const runAt = buildDailyRunAt(i, body);
+                    if (body.photoOnly) {
+                        // eslint-disable-next-line no-await-in-loop
+                        const item = await enqueueScheduledPhoto(env, {
                             profileId: profile.profileId,
-                            mediaUrl,
-                            serviceType: body.serviceType || body.theme || body.topic || "",
-                            autoGenerateSummary: body.autoGenerateSummary !== false
-                        }
-                    });
-                    scheduled.push(item);
+                            runAt,
+                            body: {
+                                mediaUrl,
+                                caption: body.caption || "",
+                                category: body.category || "ADDITIONAL"
+                            }
+                        });
+                        scheduled.push(item);
+                    } else {
+                        // eslint-disable-next-line no-await-in-loop
+                        const item = await enqueueScheduledPost(env, {
+                            profileId: profile.profileId,
+                            runAt,
+                            body: {
+                                ...body,
+                                profileId: profile.profileId,
+                                mediaUrl,
+                                serviceType: body.serviceType || body.theme || body.topic || "",
+                                autoGenerateSummary: body.autoGenerateSummary !== false
+                            }
+                        });
+                        scheduled.push(item);
+                    }
                 }
+
+                if (generated.length && body.addToProfile !== false) {
+                    await appendPhotosToProfile(env, profile.profileId, generated.map((item) => ({
+                        url: item.url,
+                        serviceType: body.serviceType || body.theme || body.topic || "",
+                        serviceTopicId: body.serviceTopicId || "",
+                        geo: item.geo || null
+                    })));
+                }
+
+                return { generated, scheduled };
+            };
+
+            const shouldRunInBackground =
+                body.background !== false &&
+                body.generateImages !== false &&
+                count > 1 &&
+                typeof ctx?.waitUntil === "function";
+
+            if (shouldRunInBackground) {
+                if (!body.photoOnly) {
+                    const scheduled = [];
+                    for (let i = 0; i < count; i++) {
+                        const runAt = buildDailyRunAt(i, body);
+                        // eslint-disable-next-line no-await-in-loop
+                        const item = await enqueueScheduledPost(env, {
+                            profileId: profile.profileId,
+                            runAt,
+                            body: {
+                                ...body,
+                                profileId: profile.profileId,
+                                serviceType: body.serviceType || body.theme || body.topic || "",
+                                autoGenerateSummary: body.autoGenerateSummary !== false,
+                                mediaPending: true,
+                                mediaGenerationWorkId: workId,
+                                mediaGenerationIndex: i
+                            }
+                        });
+                        scheduled.push(item);
+                    }
+
+                    ctx.waitUntil((async () => {
+                        const generated = [];
+                        for (let i = 0; i < scheduled.length; i++) {
+                            const prompt = buildAgentImagePrompt(profile, body, i);
+                            // eslint-disable-next-line no-await-in-loop
+                            const image = await generateAiImageToGallery(request, env, {
+                                ...body,
+                                prompt,
+                                folder: body.folder || "ai",
+                                exifMeta: buildAgentExifMeta(profile, body, i)
+                            });
+                            generated.push(image);
+                            const scheduledItem = scheduled[i];
+                            // eslint-disable-next-line no-await-in-loop
+                            await updateScheduledPost(env, scheduledItem.id, {
+                                body: {
+                                    ...scheduledItem.body,
+                                    mediaUrl: image.url,
+                                    mediaPending: false,
+                                    generatedMediaKey: image.key,
+                                    generatedMediaGeo: image.geo || null
+                                }
+                            });
+                        }
+                        if (generated.length && body.addToProfile !== false) {
+                            await appendPhotosToProfile(env, profile.profileId, generated.map((item) => ({
+                                url: item.url,
+                                serviceType: body.serviceType || body.theme || body.topic || "",
+                                serviceTopicId: body.serviceTopicId || "",
+                                geo: item.geo || null
+                            })));
+                        }
+                        console.log("agent daily schedule media background complete", {
+                            workId,
+                            profileId: profile.profileId,
+                            generated: generated.length,
+                            scheduled: scheduled.length
+                        });
+                    })().catch((err) => {
+                        console.error("agent daily schedule media background failed", {
+                            workId,
+                            profileId: profile.profileId,
+                            error: err?.message || String(err)
+                        });
+                    }));
+
+                    return jsonResponse({
+                        ok: true,
+                        background: true,
+                        workId,
+                        profileId: profile.profileId,
+                        businessName: profile.businessName || "",
+                        mode: "post",
+                        requestedCount: count,
+                        scheduled,
+                        message: "Posts were scheduled immediately. Image generation is continuing in the background and will attach media to each scheduled post when ready."
+                    });
+                }
+
+                ctx.waitUntil(scheduleWork().then((result) => {
+                    console.log("agent daily schedule background complete", {
+                        workId,
+                        profileId: profile.profileId,
+                        generated: result.generated.length,
+                        scheduled: result.scheduled.length
+                    });
+                }).catch((err) => {
+                    console.error("agent daily schedule background failed", {
+                        workId,
+                        profileId: profile.profileId,
+                        error: err?.message || String(err)
+                    });
+                }));
+                return jsonResponse({
+                    ok: true,
+                    background: true,
+                    workId,
+                    profileId: profile.profileId,
+                    businessName: profile.businessName || "",
+                    mode: body.photoOnly ? "photo" : "post",
+                    requestedCount: count,
+                    message: "Image generation and scheduling started in the background. Check scheduled posts after a few minutes."
+                });
             }
 
-            if (generated.length && body.addToProfile !== false) {
-                await appendPhotosToProfile(env, profile.profileId, generated.map((item) => ({
-                    url: item.url,
-                    serviceType: body.serviceType || body.theme || body.topic || "",
-                    serviceTopicId: body.serviceTopicId || "",
-                    geo: item.geo || null
-                })));
-            }
-
+            const result = await scheduleWork();
             return jsonResponse({
                 ok: true,
+                background: false,
+                workId,
                 profileId: profile.profileId,
                 businessName: profile.businessName || "",
                 mode: body.photoOnly ? "photo" : "post",
-                generated,
-                scheduled
+                generated: result.generated,
+                scheduled: result.scheduled
             });
         }
 
