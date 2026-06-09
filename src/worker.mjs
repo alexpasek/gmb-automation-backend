@@ -157,6 +157,40 @@ function getAgentOpenApiSchema(request) {
         longitude: { type: "number" },
         photoLat: { type: "number" },
         photoLng: { type: "number" },
+        geo: {
+            type: "object",
+            description: "Single-image geotag alias. Use geoLocations for batches.",
+            properties: {
+                city: { type: "string" },
+                neighbourhood: { type: "string" },
+                lat: { type: "number" },
+                lng: { type: "number" },
+                latitude: { type: "number" },
+                longitude: { type: "number" }
+            }
+        },
+        geotag: {
+            type: "object",
+            description: "Single-image geotag alias.",
+            properties: {
+                city: { type: "string" },
+                neighbourhood: { type: "string" },
+                lat: { type: "number" },
+                lng: { type: "number" },
+                latitude: { type: "number" },
+                longitude: { type: "number" }
+            }
+        },
+        gpsExif: {
+            type: "object",
+            description: "Single-image EXIF GPS alias.",
+            properties: {
+                lat: { type: "number" },
+                lng: { type: "number" },
+                latitude: { type: "number" },
+                longitude: { type: "number" }
+            }
+        },
         geoLocations: {
             type: "array",
             description: "Per-image geotags. Each generated/uploaded JPEG is stamped with matching EXIF GPS coordinates.",
@@ -589,7 +623,15 @@ function resolveAgentGeo(profile, body = {}, index = 0) {
     const geoList = Array.isArray(body.geoLocations) ? body.geoLocations :
         Array.isArray(body.geotags) ? body.geotags :
         Array.isArray(body.coordinates) ? body.coordinates : [];
-    const geoEntry = geoList.length ? (geoList[index] || geoList[index % geoList.length] || {}) : {};
+    const geoEntry = geoList.length ?
+        (geoList[index] || geoList[index % geoList.length] || {}) :
+        (
+            body.geo && typeof body.geo === "object" ? body.geo :
+            body.geotag && typeof body.geotag === "object" ? body.geotag :
+            body.gpsExif && typeof body.gpsExif === "object" ? body.gpsExif :
+            body.coordinates && typeof body.coordinates === "object" && !Array.isArray(body.coordinates) ? body.coordinates :
+            {}
+        );
     const city = String(
         geoEntry.city ||
         bodyValueAt(body, ["cities", "city"], index) ||
@@ -667,8 +709,14 @@ async function generateAiImageToGallery(request, env, body = {}) {
         let bytesToSave = arrayBuf;
         let exif = { stamped: false, reason: "not_requested" };
         if (exifMeta && exifMeta.hasGeo !== false) {
-            exif = embedGpsExifInJpeg(arrayBuf, exifMeta);
-            bytesToSave = exif.arrayBuffer;
+            try {
+                exif = embedGpsExifInJpeg(arrayBuf, exifMeta);
+                bytesToSave = exif.arrayBuffer;
+            } catch (err) {
+                console.warn("EXIF GPS stamping failed", err?.message || err);
+                exif = { stamped: false, reason: `stamp_failed: ${String(err?.message || err).slice(0, 160)}` };
+                bytesToSave = arrayBuf;
+            }
         }
         const saved = await saveMediaBytes(request, env, bytesToSave, {
             folder,
@@ -1213,10 +1261,18 @@ async function handleRequest(request, env, ctx) {
             let bytesToSave = bytes;
             let exif = { stamped: false, reason: "not_requested" };
             if (exifMeta.hasGeo && /jpe?g/i.test(mimeType || "")) {
-                exif = embedGpsExifInJpeg(bytes, exifMeta);
-                bytesToSave = exif.arrayBuffer;
-                mimeType = "image/jpeg";
-                ext = ".jpg";
+                try {
+                    exif = embedGpsExifInJpeg(bytes, exifMeta);
+                    bytesToSave = exif.arrayBuffer;
+                    if (exif.stamped) {
+                        mimeType = "image/jpeg";
+                        ext = ".jpg";
+                    }
+                } catch (err) {
+                    console.warn("EXIF GPS stamping failed", err?.message || err);
+                    exif = { stamped: false, reason: `stamp_failed: ${String(err?.message || err).slice(0, 160)}` };
+                    bytesToSave = bytes;
+                }
             }
 
             const saved = await saveMediaBytes(request, env, bytesToSave, {
