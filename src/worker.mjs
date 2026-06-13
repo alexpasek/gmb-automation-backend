@@ -34,7 +34,8 @@ import {
     buildQuickLinkLines,
     insertQuickLinksBeforeHashtags,
     composeAiTemplatePost,
-    fetchLocationBasics
+    fetchLocationBasics,
+    postToGmb
 } from "./gmb.mjs";
 import { aiGenerateSummaryAndHashtags, pickNeighbourhood, safeJoinHashtags } from "./ai.mjs";
 import { handleYoutubeRoute } from "./routes/youtube.mjs";
@@ -45,7 +46,7 @@ const VERSION = "1.0.0";
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-agent-api-key"
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-agent-api-key, x-epf-webhook-secret"
 };
 
 const CITY_GEO_DEFAULTS = {
@@ -62,6 +63,531 @@ const CITY_GEO_DEFAULTS = {
     "richmond hill": { lat: 43.8828, lng: -79.4403 },
     calgary: { lat: 51.0447, lng: -114.0719 }
 };
+
+const CEILING_CUSTOM_GBP_SERVICES = [
+    "Popcorn Ceiling Removal Hamilton",
+    "Stucco Ceiling Removal Hamilton",
+    "Stoney Creek Popcorn Ceiling Removal",
+    "Painted Popcorn Ceiling Removal",
+    "Smooth Ceiling Finish",
+    "Level 5 Ceiling Skim Coat",
+    "Ceiling Skim Coating",
+    "Ceiling Drywall Repair",
+    "Ceiling Painting",
+    "Basement Popcorn Ceiling Removal",
+    "Condo Popcorn Ceiling Removal",
+    "Pot Light Ceiling Patching",
+    "Dust-Controlled Ceiling Removal",
+    "HEPA Sanding Ceiling Service",
+    "Water Damage Ceiling Repair",
+    "Textured Ceiling Removal",
+    "Stipple Ceiling Removal",
+    "Ceiling Primer and Paint",
+    "Plaster Ceiling Repair",
+    "Smooth Ceiling After Popcorn Removal"
+];
+
+const BLOG_WEBHOOK_EVENTS_KEY = "blogWebhookEvents";
+const MAX_BLOG_WEBHOOK_EVENTS = 250;
+const EPF_POPCORN_PROFILE_ID = "profile-116118369255335894193-5223601481889907889";
+const HAMILTON_STONEY_PROFILE_ID = "profile-116118369255335894193-16548860165116757481";
+
+const CITY_POSTAL_CODE_HINTS = {
+    burlington: ["L7R", "L7N", "L7M", "L7T", "L7L"],
+    hamilton: ["L8P", "L8S", "L8L", "L8M", "L8N", "L8K", "L9H"],
+    "stoney creek": ["L8E", "L8G", "L8J", "L8K"],
+    mississauga: ["L5A", "L5B", "L5C", "L5M", "L5N", "L5L"],
+    oakville: ["L6H", "L6K", "L6L", "L6M", "L6J"],
+    grimsby: ["L3M"],
+    milton: ["L9T", "L9E"],
+    etobicoke: ["M8V", "M8W", "M8X", "M9B", "M9C", "M9V", "M9W"]
+};
+
+const CITY_AREA_HINTS = {
+    burlington: ["Aldershot", "Roseland", "Shoreacres", "Headon Forest", "Tyandaga", "Millcroft"],
+    hamilton: ["Ancaster", "Waterdown", "Dundas", "Binbrook", "Hamilton Mountain", "Westdale"],
+    "stoney creek": ["Fruitland", "Battlefield", "Winona", "Heritage Green", "Dewitt", "Dalegrove"],
+    mississauga: ["Port Credit", "Cooksville", "Erin Mills", "Meadowvale", "Clarkson", "Lorne Park"],
+    oakville: ["Bronte", "Glen Abbey", "River Oaks", "West Oak Trails", "Old Oakville", "College Park"]
+};
+
+function getServiceItemName(item) {
+    return String(
+        item?.freeFormServiceItem?.label?.displayName ||
+        item?.structuredServiceItem?.serviceTypeId ||
+        ""
+    ).trim();
+}
+
+function mergeFreeFormServiceItems(existingItems = [], customServices = [], category = "", languageCode = "en") {
+    const merged = Array.isArray(existingItems) ? [...existingItems] : [];
+    const seen = new Set(merged.map((item) => getServiceItemName(item).toLowerCase()).filter(Boolean));
+    for (const service of customServices) {
+        const displayName = String(service || "").trim();
+        if (!displayName) continue;
+        const key = displayName.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({
+            freeFormServiceItem: {
+                category,
+                label: {
+                    displayName,
+                    languageCode
+                }
+            }
+        });
+    }
+    return merged;
+}
+
+function normalizeBlogUrl(raw = "") {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    try {
+        const parsed = new URL(text);
+        parsed.hash = "";
+        parsed.searchParams.sort();
+        parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+        return parsed.toString().toLowerCase();
+    } catch (_e) {
+        return text.replace(/\/+$/, "").toLowerCase();
+    }
+}
+
+function slugifyPathPart(value = "") {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/&/g, " and ")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+}
+
+function isEpfBlogUrl(raw = "") {
+    try {
+        const host = new URL(String(raw || "")).hostname.replace(/^www\./, "").toLowerCase();
+        return host === "epfproservices.com";
+    } catch (_e) {
+        return String(raw || "").toLowerCase().includes("epfproservices.com");
+    }
+}
+
+function getBlogCityKey(payload = {}) {
+    const city = String(payload.city || "").trim().toLowerCase();
+    const url = String(payload.url || "").toLowerCase();
+    const title = String(payload.title || "").toLowerCase();
+    const text = `${city} ${url} ${title}`;
+    if (text.includes("stoney-creek") || text.includes("stoney creek")) return "stoney creek";
+    if (text.includes("hamilton")) return "hamilton";
+    if (text.includes("burlington")) return "burlington";
+    if (text.includes("mississauga")) return "mississauga";
+    if (text.includes("oakville")) return "oakville";
+    if (text.includes("grimsby")) return "grimsby";
+    if (text.includes("milton")) return "milton";
+    if (text.includes("etobicoke")) return "etobicoke";
+    return city;
+}
+
+function getBlogCityLandingUrl(payload = {}, profile = null) {
+    const cityKey = getBlogCityKey(payload);
+    const service = String(payload.service || "").toLowerCase();
+    if (service.includes("popcorn") || String(payload.url || "").toLowerCase().includes("popcorn")) {
+        const map = {
+            "stoney creek": "https://epfproservices.com/popcorn-ceiling-removal/hamilton/stoney-creek/",
+            hamilton: "https://epfproservices.com/popcorn-ceiling-removal/hamilton/",
+            burlington: "https://epfproservices.com/popcorn-ceiling-removal/burlington/",
+            mississauga: "https://epfproservices.com/popcorn-ceiling-removal/mississauga/",
+            oakville: "https://epfproservices.com/popcorn-ceiling-removal/oakville/",
+            grimsby: "https://epfproservices.com/popcorn-ceiling-removal/grimsby/",
+            milton: "https://epfproservices.com/popcorn-ceiling-removal/milton/",
+            etobicoke: "https://epfproservices.com/popcorn-ceiling-removal/etobicoke/"
+        };
+        if (map[cityKey]) return map[cityKey];
+        if (cityKey) return `https://epfproservices.com/popcorn-ceiling-removal/${slugifyPathPart(cityKey)}/`;
+    }
+    if (profile?.defaults?.linkUrl) return profile.defaults.linkUrl;
+    return profile?.landingUrl || String(payload.url || "").trim();
+}
+
+function scoreBlogProfile(profile, payload = {}) {
+    if (!profile || profile.disabled) return -1;
+    const city = String(payload.city || "").trim().toLowerCase();
+    const service = String(payload.service || "").trim().toLowerCase();
+    const url = String(payload.url || "").trim().toLowerCase();
+    const fields = [
+        profile.businessName,
+        profile.city,
+        profile.landingUrl,
+        profile.defaults?.linkUrl,
+        ...(Array.isArray(profile.keywords) ? profile.keywords : []),
+        ...(Array.isArray(profile.serviceTopics) ?
+            profile.serviceTopics.flatMap((topic) => [
+                topic?.label,
+                topic?.serviceType,
+                topic?.primaryKeyword,
+                topic?.cityKeyword,
+                topic?.secondaryKeywords,
+                topic?.landingUrl
+            ]) : [])
+    ].map((v) => String(v || "").toLowerCase());
+    const haystack = fields.join(" ");
+    let score = 0;
+    if (city && haystack.includes(city)) score += 25;
+    if (city && String(profile.city || "").toLowerCase() === city) score += 30;
+    if (service && haystack.includes(service)) score += 20;
+    if (service.includes("popcorn") && haystack.includes("popcorn")) score += 15;
+    try {
+        const host = profile.landingUrl ? new URL(profile.landingUrl).hostname.replace(/^www\./, "") : "";
+        if (url && host && url.includes(host)) score += 5;
+    } catch (_e) {}
+    if (String(profile.businessName || "").toLowerCase().includes("popcorn")) score += 5;
+    return score;
+}
+
+function findBlogTargetProfile(profiles = [], payload = {}) {
+    const profileId = String(payload.profileId || "").trim();
+    if (profileId) {
+        return profiles.find((profile) => profile && profile.profileId === profileId) || null;
+    }
+    const cityKey = getBlogCityKey(payload);
+    if (isEpfBlogUrl(payload.url)) {
+        const forcedId =
+            cityKey === "hamilton" || cityKey === "stoney creek" ?
+            HAMILTON_STONEY_PROFILE_ID :
+            EPF_POPCORN_PROFILE_ID;
+        const forced = profiles.find((profile) => profile && profile.profileId === forcedId && !profile.disabled);
+        if (forced) return forced;
+    }
+    return profiles
+        .map((profile) => ({ profile, score: scoreBlogProfile(profile, payload) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score)[0]?.profile || null;
+}
+
+function fallbackBlogDraft(payload = {}, profile = null) {
+    const title = String(payload.title || "").trim();
+    const excerpt = String(payload.excerpt || "").trim();
+    const url = String(payload.url || "").trim();
+    const city = String(payload.city || profile?.city || "").trim();
+    const service = String(payload.service || "home renovation").trim();
+    const tagValue = (value) => String(value || "")
+        .replace(/[^a-zA-Z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join("");
+    const tags = safeJoinHashtags([
+        tagValue(service),
+        tagValue(city),
+        "EPFProServices",
+        "GoogleBusinessProfile"
+    ], 180);
+    const text = [
+        title,
+        excerpt,
+        city ? `Serving ${city} with ${service}.` : `Service: ${service}.`,
+        url ? `Read more: ${url}` : "",
+        tags
+    ].filter(Boolean).join("\n\n");
+    return {
+        postText: text.slice(0, 1500),
+        cta: "LEARN_MORE",
+        linkUrl: url
+    };
+}
+
+function appendBlogContextToPost(postText = "", blogUrl = "", localSeo = null) {
+    const extraLines = [
+        localSeo?.text || "",
+        blogUrl ? `Blog article: ${blogUrl}` : ""
+    ].filter(Boolean).join("\n");
+    if (!extraLines) return String(postText || "").slice(0, 1500);
+    const base = String(postText || "").trim();
+    if (base.length + extraLines.length + 2 <= 1500) {
+        return `${base}\n\n${extraLines}`.trim();
+    }
+    return `${base}\n\n${blogUrl ? `Blog article: ${blogUrl}` : ""}`.trim().slice(0, 1500);
+}
+
+function seededPick(list = [], seed = "", count = 3) {
+    const source = Array.isArray(list) ? list.filter(Boolean) : [];
+    if (!source.length) return [];
+    let hash = 0;
+    const seedText = String(seed || Date.now());
+    for (let i = 0; i < seedText.length; i++) {
+        hash = ((hash << 5) - hash + seedText.charCodeAt(i)) | 0;
+    }
+    const picked = [];
+    const pool = source.slice();
+    while (pool.length && picked.length < count) {
+        const idx = Math.abs(hash + picked.length * 17) % pool.length;
+        picked.push(pool.splice(idx, 1)[0]);
+    }
+    return picked;
+}
+
+async function getBlogLocalSeoContext(env, profile, payload = {}) {
+    const cityKey = getBlogCityKey(payload);
+    const city = String(payload.city || cityKey || profile?.city || "").trim();
+    const seed = `${payload.url || ""}|${payload.title || ""}|${new Date().toISOString().slice(0, 10)}`;
+    let street = "";
+    let primaryPostal = "";
+    let mapAreas = [];
+    if (profile?.locationId) {
+        try {
+            const locationName = `locations/${profile.locationId}`;
+            const getUrl =
+                `https://mybusinessbusinessinformation.googleapis.com/v1/${locationName}` +
+                `?readMask=${encodeURIComponent("storefrontAddress,serviceArea")}`;
+            const location = await callBusinessProfileApi(env, getUrl);
+            const address = location?.storefrontAddress || {};
+            street = Array.isArray(address.addressLines) ? String(address.addressLines[0] || "").trim() : "";
+            primaryPostal = String(address.postalCode || "").trim().split(/\s+/)[0] || "";
+            mapAreas = Array.isArray(location?.serviceArea?.places?.placeInfos) ?
+                location.serviceArea.places.placeInfos.map((place) => String(place.placeName || "").replace(/,\s*ON.*$/i, "").trim()) :
+                [];
+        } catch (e) {
+            console.warn("Blog local SEO context lookup failed:", e?.message || String(e));
+        }
+    }
+    const postalHints = [
+        primaryPostal,
+        ...(CITY_POSTAL_CODE_HINTS[cityKey] || [])
+    ].filter(Boolean);
+    const areaHints = [
+        ...(CITY_AREA_HINTS[cityKey] || []),
+        ...mapAreas
+    ].filter(Boolean);
+    const postalCodes = seededPick([...new Set(postalHints)], seed, 3);
+    const areas = seededPick([...new Set(areaHints)], seed, 3);
+    const streetPart = street ? ` near ${street}` : "";
+    const areaPart = areas.length ? `, including ${areas.join(", ")}` : "";
+    const postalPart = postalCodes.length ? ` Postal areas: ${postalCodes.join(", ")}.` : "";
+    const sentence = city ?
+        `Local SEO note: ${city}${streetPart}${areaPart}.${postalPart}` :
+        `${areaPart ? `Local SEO note: ${areas.join(", ")}.` : ""}${postalPart}`;
+    return {
+        city,
+        street,
+        areas,
+        postalCodes,
+        text: sentence.trim()
+    };
+}
+
+async function buildBlogGbpDraft(env, profile, payload = {}) {
+    const url = String(payload.url || "").trim();
+    const service = String(payload.service || "").trim();
+    const title = String(payload.title || "").trim();
+    const excerpt = String(payload.excerpt || "").trim();
+    const localSeo = await getBlogLocalSeoContext(env, profile, payload);
+    const cityLandingUrl = getBlogCityLandingUrl(payload, profile);
+    if (!profile) {
+        const fallback = fallbackBlogDraft({ ...payload, url: cityLandingUrl || url }, null);
+        return {
+            ...fallback,
+            postText: appendBlogContextToPost(fallback.postText, url, localSeo),
+            blogUrl: url,
+            localSeo,
+            generationMode: "fallback_no_profile"
+        };
+    }
+
+    const profileForGeneration = {
+        ...profile,
+        city: String(payload.city || profile.city || "").trim()
+    };
+    const overrides = {
+        serviceType: service || title,
+        serviceSummary: excerpt || title,
+        serviceNotes: title,
+        linkUrl: cityLandingUrl || url,
+        cta: "LEARN_MORE"
+    };
+    try {
+        const basics = await fetchLocationBasics(env, profile);
+        const built = await composeAiTemplatePost(env, profileForGeneration, overrides, basics);
+        const quickLines = buildQuickLinkLines(profile.defaults || {});
+        let postText = insertQuickLinksBeforeHashtags((built.summary || "").trim(), quickLines);
+        const hashtags = safeJoinHashtags(built.hashtags || [], 220);
+        if (hashtags && postText.length + hashtags.length + 2 <= 1500) {
+            postText += "\n\n" + hashtags;
+        }
+        return {
+            postText: appendBlogContextToPost(postText || fallbackBlogDraft(payload, profile).postText, url, localSeo),
+            cta: built.ctaCode || "LEARN_MORE",
+            linkUrl: cityLandingUrl || built.site || url,
+            blogUrl: url,
+            localSeo,
+            template: built.template || "",
+            neighbourhood: built.neighbourhood || "",
+            generationMode: "ai"
+        };
+    } catch (e) {
+        console.error("Blog webhook draft generation failed:", e);
+        const fallback = fallbackBlogDraft({ ...payload, url: cityLandingUrl || url }, profile);
+        return {
+            ...fallback,
+            postText: appendBlogContextToPost(fallback.postText, url, localSeo),
+            blogUrl: url,
+            localSeo,
+            generationMode: "fallback_ai_error",
+            generationError: e?.message || String(e)
+        };
+    }
+}
+
+async function handleBlogWebhookEvents(request, env) {
+    if (request.method !== "GET") {
+        return jsonResponse({ success: false, error: "Method not allowed" }, 405);
+    }
+    const expectedSecret = String(env.EPF_WEBHOOK_SECRET || "").trim();
+    const providedSecret = String(request.headers.get("x-epf-webhook-secret") || "").trim();
+    if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+        return jsonResponse({ success: false, error: "Unauthorized webhook" }, 401);
+    }
+    const events = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
+    return jsonResponse({
+        success: true,
+        count: Array.isArray(events) ? events.length : 0,
+        events: Array.isArray(events) ? events : []
+    });
+}
+
+async function handleBlogAutomationStatus(request, env) {
+    if (request.method !== "GET") {
+        return jsonResponse({ success: false, error: "Method not allowed" }, 405);
+    }
+    const events = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
+    const list = Array.isArray(events) ? events : [];
+    const posted = list.filter((item) => item?.status === "POSTED").length;
+    const failed = list.filter((item) => item?.status === "POST_FAILED").length;
+    const profiles = await getProfiles(env).catch(() => []);
+    const epfProfile = profiles.find((profile) => profile?.profileId === EPF_POPCORN_PROFILE_ID && !profile.disabled);
+    const hamiltonProfile = profiles.find((profile) => profile?.profileId === HAMILTON_STONEY_PROFILE_ID && !profile.disabled);
+    const lastFailed = list.find((item) => item?.status === "POST_FAILED");
+    const minuteBuckets = new Map();
+    list.forEach((item) => {
+        const minute = String(item?.receivedAt || "").slice(0, 16);
+        if (!minute) return;
+        if (!minuteBuckets.has(minute)) minuteBuckets.set(minute, []);
+        minuteBuckets.get(minute).push(item);
+    });
+    const batches = [...minuteBuckets.entries()]
+        .map(([minute, items]) => ({
+            minute,
+            count: items.length,
+            statuses: items.reduce((acc, item) => {
+                const status = item?.status || "UNKNOWN";
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {}),
+            items: items.slice(0, 5).map((item) => ({
+                id: item.id,
+                title: item.title,
+                status: item.status,
+                businessName: item.businessName,
+                error: item.error || ""
+            }))
+        }))
+        .sort((a, b) => b.minute.localeCompare(a.minute));
+    const busyBatch = batches.find((batch) => batch.count >= 5) || null;
+    const last = list[0] || null;
+    const mkAgent = ({ ok, label, detail, tooltip, reason = "" }) => ({
+        ok,
+        label,
+        detail,
+        tooltip,
+        reason: ok ? "Self-test passed." : reason || detail,
+        checkedAt: new Date().toISOString()
+    });
+    return jsonResponse({
+        success: true,
+        agents: {
+            validation: mkAgent({
+                ok: !!env.EPF_WEBHOOK_SECRET,
+                label: "Validation agent",
+                detail: "Secret, event type, URL, title, and duplicate checks active",
+                tooltip: "Receives the website webhook, checks x-epf-webhook-secret, validates BLOG_POST_CREATED, confirms URL/title, and blocks duplicate blog URLs.",
+                reason: "EPF_WEBHOOK_SECRET is missing from Worker secrets."
+            }),
+            profileRouter: mkAgent({
+                ok: !!epfProfile && !!hamiltonProfile,
+                label: "Profile router",
+                detail: "EPF blogs route to EPF profile; Hamilton/Stoney Creek routes to Stoney Creek",
+                tooltip: "Chooses the EPF Pro Services popcorn profile for normal EPF blog posts and the Stoney Creek/Hamilton profile for Hamilton or Stoney Creek blog posts.",
+                reason: !epfProfile ? "EPF popcorn profile is missing or paused." : "Hamilton/Stoney Creek profile is missing or paused."
+            }),
+            draftGenerator: mkAgent({
+                ok: !!env.OPENAI_API_KEY,
+                label: "Draft generator",
+                detail: "AI post copy, city-page CTA, blog link, and local SEO signals active",
+                tooltip: "Builds GBP post text, uses the city service page as the Learn More URL, includes the original blog link in the post body, and adds local area/postal-code signals.",
+                reason: "OPENAI_API_KEY is missing, so draft generation would fall back to simple copy."
+            }),
+            posting: mkAgent({
+                ok: failed === 0,
+                label: "Posting agent",
+                detail: failed ? `${failed} failed event(s) need review` : "Auto-posting to GBP is active",
+                tooltip: "Publishes the generated post to Google Business Profile immediately. If Google rejects the post, the event is saved as POST_FAILED with the error reason.",
+                reason: lastFailed ? (lastFailed.error || "Last failed event did not include an error message.") : ""
+            }),
+            monitoring: mkAgent({
+                ok: true,
+                label: "Monitoring agent",
+                detail: `${list.length} event(s) stored, ${posted} posted`,
+                tooltip: "Stores webhook events, post results, duplicate protection state, and recent processing logs in D1-backed KV.",
+                reason: ""
+            }),
+            batchControl: mkAgent({
+                ok: !busyBatch,
+                label: "Batch control agent",
+                detail: busyBatch ? `${busyBatch.count} events arrived at ${busyBatch.minute}` : "No 5-at-once event bursts detected",
+                tooltip: "Watches for bursts of five or more blog webhooks in the same minute. The panel groups those logs so the interface stays readable.",
+                reason: busyBatch ? "Several webhooks arrived together. They are grouped in the batch log section; failed items show their reason." : ""
+            })
+        },
+        totals: {
+            events: list.length,
+            posted,
+            failed,
+            batches: batches.length,
+            busyBatches: batches.filter((batch) => batch.count >= 5).length
+        },
+        lastEvent: last ? {
+            id: last.id,
+            status: last.status,
+            title: last.title,
+            city: last.city,
+            service: last.service,
+            profileId: last.profileId,
+            businessName: last.businessName,
+            receivedAt: last.receivedAt,
+            postedAt: last.postedAt || "",
+            url: last.url,
+            ctaUrl: last.draft?.linkUrl || "",
+            blogUrl: last.draft?.blogUrl || last.url || "",
+            postedUrl: last.postResult?.postedUrl || last.postResult?.data?.searchUrl || "",
+            localSeo: last.draft?.localSeo || null,
+            error: last.error || ""
+        } : null,
+        recent: list.slice(0, 8).map((item) => ({
+            id: item.id,
+            status: item.status,
+            title: item.title,
+            city: item.city,
+            service: item.service,
+            businessName: item.businessName,
+            receivedAt: item.receivedAt,
+            postedAt: item.postedAt || "",
+            postedUrl: item.postResult?.postedUrl || item.postResult?.data?.searchUrl || "",
+            error: item.error || ""
+        })),
+        batches: batches.slice(0, 8)
+    });
+}
 
 function jsonResponse(obj, status = 200) {
     return new Response(JSON.stringify(obj), {
@@ -87,6 +613,153 @@ function optionsResponse() {
     return new Response(null, {
         status: 204,
         headers: CORS_HEADERS
+    });
+}
+
+async function handleBlogCreatedWebhook(request, env) {
+    if (request.method !== "POST") {
+        return jsonResponse({ success: false, error: "Method not allowed" }, 405);
+    }
+
+    const expectedSecret = String(env.EPF_WEBHOOK_SECRET || "").trim();
+    const providedSecret = String(request.headers.get("x-epf-webhook-secret") || "").trim();
+    if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+        return jsonResponse({ success: false, error: "Unauthorized webhook" }, 401);
+    }
+
+    let body;
+    try {
+        body = await request.json();
+    } catch (_e) {
+        return jsonResponse({ success: false, error: "Invalid JSON body" }, 400);
+    }
+
+    const {
+        event,
+        url,
+        title,
+        excerpt,
+        city,
+        service,
+        publishedAt
+    } = body || {};
+
+    if (event !== "BLOG_POST_CREATED") {
+        return jsonResponse({ success: false, error: "Invalid event type" }, 400);
+    }
+
+    if (!url || !title) {
+        return jsonResponse({ success: false, error: "Missing blog url or title" }, 400);
+    }
+
+    const normalizedUrl = normalizeBlogUrl(url);
+    const existingEvents = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
+    const events = Array.isArray(existingEvents) ? existingEvents : [];
+    const duplicate = events.find((item) => item && item.normalizedUrl === normalizedUrl);
+    if (duplicate && duplicate.status !== "POST_FAILED") {
+        return jsonResponse({
+            success: false,
+            error: "Duplicate blog url",
+            duplicate: {
+                id: duplicate.id,
+                receivedAt: duplicate.receivedAt,
+                status: duplicate.status || ""
+            }
+        }, 409);
+    }
+
+    const profiles = await getProfiles(env);
+    const targetProfile = findBlogTargetProfile(profiles, body || {});
+    if (!targetProfile) {
+        return jsonResponse({ success: false, error: "No matching GBP profile found for blog city/service" }, 400);
+    }
+    const draft = await buildBlogGbpDraft(env, targetProfile, body || {});
+    const now = new Date().toISOString();
+    const record = {
+        id: crypto.randomUUID(),
+        status: "POSTING",
+        receivedAt: now,
+        updatedAt: now,
+        normalizedUrl,
+        event,
+        url,
+        title,
+        excerpt: excerpt || "",
+        city: city || "",
+        service: service || "",
+        publishedAt: publishedAt || "",
+        profileId: targetProfile?.profileId || "",
+        businessName: targetProfile?.businessName || "",
+        draft
+    };
+
+    let postResult = null;
+    try {
+        postResult = await postToGmb(env, {
+            profileId: targetProfile.profileId,
+            postText: draft.postText,
+            cta: draft.cta || "LEARN_MORE",
+            linkUrl: draft.linkUrl || url,
+            serviceType: service || title,
+            topicType: "STANDARD"
+        });
+        record.status = "POSTED";
+        record.postedAt = new Date().toISOString();
+        record.updatedAt = record.postedAt;
+        record.postResult = postResult;
+    } catch (e) {
+        record.status = "POST_FAILED";
+        record.updatedAt = new Date().toISOString();
+        record.error = e?.message || String(e);
+        await setJson(env, BLOG_WEBHOOK_EVENTS_KEY, [record, ...events].slice(0, MAX_BLOG_WEBHOOK_EVENTS));
+        console.error("Blog webhook auto-post failed:", record);
+        return jsonResponse({
+            success: false,
+            error: "GBP auto-post failed",
+            data: {
+                id: record.id,
+                url,
+                title,
+                city,
+                service,
+                status: record.status,
+                profileId: record.profileId,
+                businessName: record.businessName,
+                draft,
+                postError: record.error
+            }
+        }, 500);
+    }
+
+    await setJson(env, BLOG_WEBHOOK_EVENTS_KEY, [record, ...events.filter((item) => item?.normalizedUrl !== normalizedUrl)].slice(0, MAX_BLOG_WEBHOOK_EVENTS));
+
+    console.log("New blog webhook received:", {
+        id: record.id,
+        url,
+        title,
+        excerpt,
+        city,
+        service,
+        publishedAt,
+        profileId: record.profileId,
+        status: record.status
+    });
+
+    return jsonResponse({
+        success: true,
+        message: "Blog webhook received and GBP post published",
+        data: {
+            id: record.id,
+            url,
+            title,
+            city,
+            service,
+            status: record.status,
+            profileId: record.profileId,
+            businessName: record.businessName,
+            draft,
+            postResult
+        }
     });
 }
 
@@ -1213,6 +1886,18 @@ async function handleRequest(request, env, ctx) {
         return jsonResponse({ name: "gmb-automation-backend", version: VERSION });
     }
 
+    if (pathname === "/api/webhooks/blog-created/events") {
+        return handleBlogWebhookEvents(request, env);
+    }
+
+    if (pathname === "/api/webhooks/blog-created/status") {
+        return handleBlogAutomationStatus(request, env);
+    }
+
+    if (pathname === "/api/webhooks/blog-created") {
+        return handleBlogCreatedWebhook(request, env);
+    }
+
     if (
         (pathname === "/privacy" || pathname === "/privacy-policy") &&
         request.method === "GET"
@@ -1915,8 +2600,70 @@ async function handleRequest(request, env, ctx) {
         return jsonResponse({ ok: true, profiles });
     }
 
+    let m;
+
+    // POST /profiles/:id/gbp-custom-services
+    // Adds free-form GBP services to the Google Business Profile location.
+    m = pathname.match(/^\/profiles\/([^/]+)\/gbp-custom-services$/);
+    if (m && request.method === "POST") {
+        const id = decodeURIComponent(m[1]);
+        const body = await parseJsonBody(request);
+        const profiles = await getProfiles(env);
+        const profile = profiles.find((p) => p && p.profileId === id);
+        if (!profile) return jsonResponse({ error: "Profile not found" }, 404);
+        if (!profile.locationId) return jsonResponse({ error: "Profile is missing locationId" }, 400);
+
+        const customServices = Array.isArray(body.services) && body.services.length ?
+            body.services :
+            CEILING_CUSTOM_GBP_SERVICES;
+        const locationName = `locations/${profile.locationId}`;
+        const getUrl =
+            `https://mybusinessbusinessinformation.googleapis.com/v1/${locationName}` +
+            `?readMask=${encodeURIComponent("name,languageCode,categories,serviceItems")}`;
+        const location = await callBusinessProfileApi(env, getUrl);
+        const category = String(
+            body.category ||
+            location?.categories?.primaryCategory?.name ||
+            ""
+        ).trim();
+        if (!category) {
+            return jsonResponse({ error: "GBP location is missing a primary category for custom services" }, 400);
+        }
+
+        const beforeItems = Array.isArray(location.serviceItems) ? location.serviceItems : [];
+        const serviceItems = mergeFreeFormServiceItems(
+            beforeItems,
+            customServices,
+            category,
+            String(body.languageCode || location.languageCode || "en").trim() || "en"
+        );
+        const patchUrl =
+            `https://mybusinessbusinessinformation.googleapis.com/v1/${locationName}` +
+            `?updateMask=${encodeURIComponent("serviceItems")}`;
+        const updated = await callBusinessProfileApi(env, patchUrl, {
+            method: "PATCH",
+            body: JSON.stringify({
+                name: locationName,
+                serviceItems
+            })
+        });
+
+        return jsonResponse({
+            ok: true,
+            profileId: profile.profileId,
+            businessName: profile.businessName || "",
+            locationId: profile.locationId,
+            category,
+            beforeCount: beforeItems.length,
+            afterCount: serviceItems.length,
+            addedCount: serviceItems.length - beforeItems.length,
+            services: serviceItems.map(getServiceItemName).filter(Boolean),
+            updated
+        });
+    }
+
     // PATCH /profiles/:id/defaults
-    let m = pathname.match(/^\/profiles\/([^/]+)\/defaults$/);
+    m = pathname.match(/^\/profiles\/([^/]+)\/defaults$/);
     if (m && request.method === "PATCH") {
         const id = decodeURIComponent(m[1]);
         const body = await parseJsonBody(request);

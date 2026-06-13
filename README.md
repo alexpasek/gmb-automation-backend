@@ -35,6 +35,7 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put GOOGLE_REDIRECT_URI
+npx wrangler secret put EPF_WEBHOOK_SECRET
 ```
 
 For `GOOGLE_REDIRECT_URI`, use your Worker URL, e.g.:
@@ -80,6 +81,55 @@ Create the bucket in your Cloudflare account (or update `bucket_name` to an exis
 ```bash
 npm run deploy
 ```
+
+## EPF blog webhook
+
+The website can notify the GMB poster when a blog post is published:
+
+`POST /api/webhooks/blog-created`
+
+Required header:
+
+`x-epf-webhook-secret: <EPF_WEBHOOK_SECRET>`
+
+Expected JSON:
+
+```json
+{
+  "event": "BLOG_POST_CREATED",
+  "url": "https://epfproservices.com/blog/popcorn-ceiling-removal-burlington/",
+  "title": "Popcorn Ceiling Removal in Burlington",
+  "excerpt": "Short blog description here",
+  "city": "Burlington",
+  "service": "Popcorn Ceiling Removal",
+  "publishedAt": "2026-06-12T18:00:00Z"
+}
+```
+
+Current workflow:
+
+1. Validates the secret and payload.
+2. Stores the blog event in D1-backed KV.
+3. Rejects duplicate blog URLs.
+4. Routes EPF blog posts to the EPF popcorn profile, except Hamilton/Stoney Creek posts, which route to the Stoney Creek/Hamilton location.
+5. Generates GBP post copy.
+6. Uses the city service page for the GBP Learn More button.
+7. Includes the original blog URL in the post body.
+8. Adds rotating local SEO signals from GBP address/service-area data plus city postal-code hints.
+9. Publishes the post to the matched Google Business Profile automatically.
+10. Stores `POSTED` or `POST_FAILED` status with the event.
+
+There is no manual approval step in this flow.
+
+Saved webhook events can be checked with:
+
+`GET /api/webhooks/blog-created/events`
+
+Use the same `x-epf-webhook-secret` header.
+
+Dashboard-safe automation status is available at:
+
+`GET /api/webhooks/blog-created/status`
 
 ## Agent API for GPT Actions
 
