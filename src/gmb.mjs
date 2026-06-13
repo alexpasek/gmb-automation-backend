@@ -72,18 +72,50 @@ function decodeBase64ToArrayBuffer(base64) {
     return bytes.buffer;
 }
 
+function getServiceImageScene(service = "") {
+    const text = String(service || "").toLowerCase();
+    if (/drywall/.test(text) && /install|installation|boarding|sheetrock|hang/.test(text)) {
+        return {
+            keyword: "Drywall Installation",
+            scene: "Show drywall installation clearly: clean interior renovation room, new drywall boards being installed, visible studs or fresh wall panels, screw gun, T-square, joint compound bucket, taped seams, protected floors, professional contractor tools, and a clean finished wall area."
+        };
+    }
+    if (/drywall|patch|patching|repair|hole|crack|water damage/.test(text)) {
+        return {
+            keyword: /patch/.test(text) ? "Drywall Patching" : "Drywall Repair",
+            scene: "Show drywall repair clearly: protected interior room, damaged drywall or ceiling patch area, mesh tape, compound knife, sanding sponge or vacuum sander, joint compound bucket, and a smooth repaired finish section."
+        };
+    }
+    return {
+        keyword: "Popcorn Ceiling Removal",
+        scene: "Show popcorn ceiling removal or ceiling smoothing clearly: protected living room, plastic sheeting, ladder, scraper or vacuum sander, compound bucket, visible bumpy ceiling texture, and smooth finished ceiling result."
+    };
+}
+
 async function generateScheduledPendingMedia(env, profile, body = {}) {
     if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set");
     if (!env.MEDIA_BUCKET) throw new Error("MEDIA_BUCKET not set");
     const service = String(body.serviceType || body.theme || "popcorn ceiling removal").trim();
     const city = String(body.city || profile.city || "").trim();
-    const prompt = String(body.prompt || "").trim() || [
+    const imageScene = getServiceImageScene(service);
+    const basePrompt = String(body.prompt || "").trim() || [
         "Create an ultra-realistic contractor photo for a Google Business Profile post.",
         `Service: ${service}.`,
         city ? `City: ${city}.` : "",
-        "Show popcorn ceiling removal or ceiling smoothing clearly: protected room, ladder, scraper or sander, vacuum hose, bumpy ceiling texture, and smooth finished ceiling result.",
+        imageScene.scene,
         "No pest control, insects, rodents, traps, unrelated services, fake logos, or watermarks."
     ].filter(Boolean).join(" ");
+    const keyword = imageScene.keyword;
+    const prompt = [
+        basePrompt,
+        "Mandatory EPF Pro Services marketing overlay:",
+        `Top dark navy banner with large bold white SEO keyword text, spelled exactly "${keyword}".`,
+        city ? `Second banner line: readable city/location text, spelled exactly "${city}".` : "",
+        `Small clean brand text: "${profile.businessName || "EPF Pro Services"}".`,
+        "Bottom tagline in white, if readable: CLEAN. MODERN. TRANSFORMED.",
+        "Use a premium contractor GBP service graphic style with a realistic EPF Pro Services renovation job site and a clean modern finished result.",
+        "Text must be crisp, high contrast, correctly spelled, centered, and not warped."
+    ].filter(Boolean).join("\n\n");
     const model = String(body.model || env.OPENAI_IMAGE_MODEL || "gpt-image-1.5").trim();
     const size = String(body.size || "1536x1024").trim();
     const quality = String(body.quality || "high").trim();
@@ -1835,8 +1867,20 @@ export async function postToGmb(env, body) {
     const phoneOverride = (body && body.phone) || defaults.phone || "";
     const providedLinkUrl = linkUrl;
     const siteCandidate = basics.websiteUri || profile.landingUrl || "";
-    let mediaUrlRaw = ensureAbsoluteMediaUrl(env, (body && body.mediaUrl) || defaults.mediaUrl || "");
+    let mediaUrlRaw = ensureAbsoluteMediaUrl(env, (body && body.mediaUrl) || "");
     let usedFromPool = false;
+
+    if (!mediaUrlRaw && body && body.mediaPending && body.forceGenerateMedia) {
+        mediaUrlRaw = await generateScheduledPendingMedia(env, profile, body);
+        console.log("[scheduled-post] Generated forced pending media", {
+            profileId,
+            mediaUrl: mediaUrlRaw
+        });
+    }
+
+    if (!mediaUrlRaw) {
+        mediaUrlRaw = ensureAbsoluteMediaUrl(env, defaults.mediaUrl || "");
+    }
 
     if (!mediaUrlRaw && body && body.mediaPending) {
         mediaUrlRaw = await generateScheduledPendingMedia(env, profile, body);

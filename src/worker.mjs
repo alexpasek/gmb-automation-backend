@@ -141,6 +141,31 @@ function mergeFreeFormServiceItems(existingItems = [], customServices = [], cate
     return merged;
 }
 
+function buildEpfImageBrandingPrompt(prompt = "", context = {}) {
+    const base = String(prompt || "").trim();
+    const service = String(context.serviceType || context.service || context.theme || "Popcorn Ceiling Removal").trim();
+    const city = String(context.city || "").trim();
+    const businessName = String(context.businessName || "EPF Pro Services").trim();
+    const serviceKeyword = /popcorn|ceiling|stucco/i.test(service) ? "Popcorn Ceiling Removal" : service;
+    const cityLine = city ?
+        `Second banner line: readable city/location text, spelled exactly "${city}".` :
+        "Second banner line: readable city/location text when a city is known; do not invent one.";
+    const brandText = businessName.toLowerCase().includes("epf") ? businessName : "EPF Pro Services";
+    const requiredOverlay = [
+        "Mandatory EPF Pro Services marketing overlay:",
+        `Top dark navy banner with large bold white SEO keyword text, spelled exactly "${serviceKeyword}".`,
+        cityLine,
+        `Small clean brand text: "${brandText}".`,
+        "Bottom tagline in white, if readable: CLEAN. MODERN. TRANSFORMED.",
+        "Use the same contractor ad style as a premium Google Business Profile image: protected living room, plastic sheeting, ladder, compound bucket, vacuum sander or scraper, smooth finished ceiling, warm beige/gold location strip.",
+        "Text must be crisp, high contrast, centered, correctly spelled, and not warped."
+    ].join(" ");
+    const negative = [
+        "Do not include unrelated services, pest control, insects, rodents, random fake brands, unreadable text, fake phone numbers, watermarks, distorted ladders, warped rooms, or customer faces."
+    ].join(" ");
+    return [base, requiredOverlay, negative].filter(Boolean).join("\n\n");
+}
+
 function normalizeBlogUrl(raw = "") {
     const text = String(raw || "").trim();
     if (!text) return "";
@@ -189,9 +214,30 @@ function getBlogCityKey(payload = {}) {
     return city;
 }
 
+function inferBlogServiceType(payload = {}) {
+    const text = [
+        payload.service,
+        payload.title,
+        payload.excerpt,
+        payload.url
+    ].map((value) => String(value || "").toLowerCase()).join(" ");
+
+    if (/\bdrywall\b/.test(text)) {
+        if (/install|installation|boarding|sheetrock|hang/.test(text)) return "Drywall Installation";
+        if (/patch|patching|repair|hole|crack|water damage|ceiling repair/.test(text)) return "Drywall Repair and Patching";
+        return "Drywall Repair";
+    }
+
+    if (/popcorn|stucco|stipple|textured ceiling|ceiling removal|smooth ceiling|skim coat|ceiling skim/.test(text)) {
+        return "Popcorn Ceiling Removal";
+    }
+
+    return String(payload.service || payload.title || "Popcorn Ceiling Removal").trim();
+}
+
 function getBlogCityLandingUrl(payload = {}, profile = null) {
     const cityKey = getBlogCityKey(payload);
-    const service = String(payload.service || "").toLowerCase();
+    const service = inferBlogServiceType(payload).toLowerCase();
     if (service.includes("popcorn") || String(payload.url || "").toLowerCase().includes("popcorn")) {
         const map = {
             "stoney creek": "https://epfproservices.com/popcorn-ceiling-removal/hamilton/stoney-creek/",
@@ -379,7 +425,7 @@ async function getBlogLocalSeoContext(env, profile, payload = {}) {
 
 async function buildBlogGbpDraft(env, profile, payload = {}) {
     const url = String(payload.url || "").trim();
-    const service = String(payload.service || "").trim();
+    const service = inferBlogServiceType(payload);
     const title = String(payload.title || "").trim();
     const excerpt = String(payload.excerpt || "").trim();
     const localSeo = await getBlogLocalSeoContext(env, profile, payload);
@@ -509,8 +555,8 @@ async function handleBlogAutomationStatus(request, env) {
             validation: mkAgent({
                 ok: !!env.EPF_WEBHOOK_SECRET,
                 label: "Validation agent",
-                detail: "Secret, event type, URL, title, and duplicate checks active",
-                tooltip: "Receives the website webhook, checks x-epf-webhook-secret, validates BLOG_POST_CREATED, confirms URL/title, and blocks duplicate blog URLs.",
+                detail: "Secret, EPF domain, event type, URL, title, and duplicate checks active",
+                tooltip: "Receives the website webhook, checks x-epf-webhook-secret, validates BLOG_POST_CREATED, confirms the blog URL is from epfproservices.com, confirms URL/title, and blocks duplicate blog URLs.",
                 reason: "EPF_WEBHOOK_SECRET is missing from Worker secrets."
             }),
             profileRouter: mkAgent({
@@ -652,6 +698,13 @@ async function handleBlogCreatedWebhook(request, env) {
         return jsonResponse({ success: false, error: "Missing blog url or title" }, 400);
     }
 
+    if (!isEpfBlogUrl(url)) {
+        return jsonResponse({
+            success: false,
+            error: "Only epfproservices.com blog URLs are accepted for this automation"
+        }, 400);
+    }
+
     const normalizedUrl = normalizeBlogUrl(url);
     const existingEvents = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
     const events = Array.isArray(existingEvents) ? existingEvents : [];
@@ -673,6 +726,8 @@ async function handleBlogCreatedWebhook(request, env) {
     if (!targetProfile) {
         return jsonResponse({ success: false, error: "No matching GBP profile found for blog city/service" }, 400);
     }
+    const imageServiceType = inferBlogServiceType(body || {});
+    const cityKey = getBlogCityKey(body || {});
     const draft = await buildBlogGbpDraft(env, targetProfile, body || {});
     const now = new Date().toISOString();
     const record = {
@@ -687,6 +742,7 @@ async function handleBlogCreatedWebhook(request, env) {
         excerpt: excerpt || "",
         city: city || "",
         service: service || "",
+        imageServiceType,
         publishedAt: publishedAt || "",
         profileId: targetProfile?.profileId || "",
         businessName: targetProfile?.businessName || "",
@@ -700,8 +756,13 @@ async function handleBlogCreatedWebhook(request, env) {
             postText: draft.postText,
             cta: draft.cta || "LEARN_MORE",
             linkUrl: draft.linkUrl || url,
-            serviceType: service || title,
-            topicType: "STANDARD"
+            serviceType: imageServiceType,
+            theme: imageServiceType,
+            city: city || cityKey || targetProfile.city || "",
+            businessName: targetProfile.businessName || "EPF Pro Services",
+            topicType: "STANDARD",
+            mediaPending: true,
+            forceGenerateMedia: true
         });
         record.status = "POSTED";
         record.postedAt = new Date().toISOString();
@@ -740,6 +801,7 @@ async function handleBlogCreatedWebhook(request, env) {
         excerpt,
         city,
         service,
+        imageServiceType,
         publishedAt,
         profileId: record.profileId,
         status: record.status
@@ -754,6 +816,7 @@ async function handleBlogCreatedWebhook(request, env) {
             title,
             city,
             service,
+            imageServiceType,
             status: record.status,
             profileId: record.profileId,
             businessName: record.businessName,
@@ -1612,7 +1675,13 @@ function buildAgentImagePrompt(profile, body = {}, index = 0) {
         profile.defaults.photoNeighbourhoods :
         Array.isArray(profile.neighbourhoods) ? profile.neighbourhoods : [];
     const neighbourhood = String(geo.neighbourhood || neighbourhoods[index % Math.max(1, neighbourhoods.length)] || "").trim();
-    if (body.prompt) return String(body.prompt).trim();
+    if (body.prompt) {
+        return buildEpfImageBrandingPrompt(body.prompt, {
+            serviceType: service,
+            city,
+            businessName: profile.businessName || "EPF Pro Services"
+        });
+    }
     const serviceSignals = `${service} ${body.topic || ""} ${body.theme || ""}`.toLowerCase();
     const popcornFocus =
         serviceSignals.includes("popcorn") ||
@@ -1629,7 +1698,7 @@ function buildAgentImagePrompt(profile, body = {}, index = 0) {
     ];
     const selectedPopcornScene = popcornScenes[index % popcornScenes.length];
     if (popcornFocus) {
-        return [
+        return buildEpfImageBrandingPrompt([
             "Create a square social media marketing image for a Google Business Profile post, in the same style as a professional contractor before-and-after service graphic.",
             "Use ultra-realistic human-shot residential renovation photography, not illustration, not 3D render, not glossy stock photography.",
             `Required service keyword text on the image, spelled exactly: "${headline}".`,
@@ -1645,9 +1714,13 @@ function buildAgentImagePrompt(profile, body = {}, index = 0) {
             "Add a short premium tagline below the banner only if it is readable: CLEAN. MODERN. TRANSFORMED.",
             "Make popcorn ceiling removal instantly recognizable: bumpy/stucco texture, scraped smooth ceiling, dust protection, ladder, scraper or sander, vacuum hose, masking tape, compound bucket, and clean finished ceiling should be visible.",
             "Avoid fake logos, watermarks, business cards, random unreadable text, warped rooms, impossible tools, extra fingers, distorted ladders, clear customer faces, and overly perfect AI-looking surfaces."
-        ].join(" ");
+        ].join(" "), {
+            serviceType: headline,
+            city: locationLine,
+            businessName: profile.businessName || "EPF Pro Services"
+        });
     }
-    return [
+    return buildEpfImageBrandingPrompt([
         "Create an ultra-realistic human-shot contractor project photo for Google Business Profile.",
         `Business: ${profile.businessName || "local contractor"}.`,
         `Service theme: ${service}.`,
@@ -1655,7 +1728,11 @@ function buildAgentImagePrompt(profile, body = {}, index = 0) {
         "Make the service instantly recognizable beside Google search results.",
         "Use a real job-site look with ordinary residential surroundings, natural light, tools, dust protection, and realistic imperfections.",
         "Do not include text, logos, watermarks, readable labels, fake before/after text, distorted rooms, or stock-photo styling."
-    ].join(" ");
+    ].join(" "), {
+        serviceType: service,
+        city,
+        businessName: profile.businessName || "EPF Pro Services"
+    });
 }
 
 function buildDailyRunAt(index, body = {}) {
@@ -3186,7 +3263,11 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ error: "OPENAI_API_KEY not set" }, 500);
         }
         const body = await parseJsonBody(request);
-        const prompt = (body.prompt || "").trim() || "home renovation photo";
+        const prompt = buildEpfImageBrandingPrompt((body.prompt || "").trim() || "home renovation photo", {
+            serviceType: body.serviceType || body.theme || body.topic || "",
+            city: body.city || body.photoCity || "",
+            businessName: body.businessName || "EPF Pro Services"
+        });
         const requestedModel = String(
             body.model || env.OPENAI_IMAGE_MODEL || "gpt-image-1.5"
         ).trim();
