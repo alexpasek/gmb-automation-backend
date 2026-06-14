@@ -198,6 +198,169 @@ function isEpfBlogUrl(raw = "") {
     }
 }
 
+function firstNonEmpty(...values) {
+    for (const value of values) {
+        if (value === null || value === undefined) continue;
+        const text = String(value).trim();
+        if (text) return text;
+    }
+    return "";
+}
+
+function stripHtml(value = "") {
+    return String(value || "")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function extractFirstUrl(value = "") {
+    const match = String(value || "").match(/https?:\/\/[^\s"'<>]+/i);
+    return match ? match[0].replace(/[),.;]+$/, "") : "";
+}
+
+function titleFromBlogUrl(raw = "") {
+    try {
+        const parsed = new URL(String(raw || ""));
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        const slug = parts[parts.length - 1] || "";
+        return slug
+            .replace(/[-_]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    } catch (_e) {
+        return "";
+    }
+}
+
+function parseBlogWebhookBody(rawText = "", contentType = "") {
+    const text = String(rawText || "").trim();
+    if (!text) return {};
+    if (contentType.includes("application/json") || /^[\[{"]/.test(text)) {
+        try {
+            const parsed = JSON.parse(text);
+            if (typeof parsed === "string") return { url: extractFirstUrl(parsed) || parsed };
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch (_e) {
+            // Fall through and treat the body as plain text.
+        }
+    }
+    const url = extractFirstUrl(text);
+    return url ? { url, rawText: text } : { rawText: text };
+}
+
+function normalizeBlogWebhookBody(body = {}) {
+    const post = body.post || body.data?.post || body.data || {};
+    const event = firstNonEmpty(
+        body.event,
+        body.eventType,
+        body.type,
+        body.action,
+        body.hook,
+        post.event,
+        post.eventType,
+        post.type,
+        post.action
+    );
+    const status = firstNonEmpty(
+        body.status,
+        body.post_status,
+        body.postStatus,
+        body.data?.status,
+        body.data?.post_status,
+        post.status,
+        post.post_status,
+        post.postStatus
+    );
+    const url = firstNonEmpty(
+        body.url,
+        body.link,
+        body.permalink,
+        body.postUrl,
+        body.post_url,
+        body.guid?.rendered,
+        body.data?.url,
+        body.data?.link,
+        body.data?.permalink,
+        post.url,
+        post.link,
+        post.permalink,
+        post.postUrl,
+        post.post_url,
+        post.guid?.rendered
+    );
+    const title = stripHtml(firstNonEmpty(
+        body.title?.rendered,
+        body.title,
+        body.post_title,
+        body.postTitle,
+        body.data?.title?.rendered,
+        body.data?.title,
+        body.data?.post_title,
+        post.title?.rendered,
+        post.title,
+        post.post_title,
+        post.postTitle,
+        titleFromBlogUrl(url)
+    ));
+    const excerpt = stripHtml(firstNonEmpty(
+        body.excerpt?.rendered,
+        body.excerpt,
+        body.summary,
+        body.description,
+        body.data?.excerpt?.rendered,
+        body.data?.excerpt,
+        post.excerpt?.rendered,
+        post.excerpt,
+        post.summary,
+        post.description
+    ));
+    return {
+        ...body,
+        event,
+        status,
+        url,
+        title,
+        excerpt,
+        city: firstNonEmpty(body.city, body.location, body.data?.city, post.city, post.location),
+        service: firstNonEmpty(body.service, body.serviceType, body.category, body.data?.service, post.service, post.serviceType, post.category),
+        publishedAt: firstNonEmpty(
+            body.publishedAt,
+            body.published_at,
+            body.date,
+            body.post_date,
+            body.data?.publishedAt,
+            body.data?.date,
+            post.publishedAt,
+            post.published_at,
+            post.date,
+            post.post_date
+        )
+    };
+}
+
+function isAcceptedBlogCreatedEvent(payload = {}) {
+    const event = String(payload.event || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const status = String(payload.status || "").trim().toLowerCase();
+    const url = String(payload.url || "").trim();
+    const acceptedEvents = new Set([
+        "blog_post_created",
+        "blog_post_published",
+        "post_created",
+        "post_published",
+        "publish_post",
+        "published_post",
+        "created",
+        "published"
+    ]);
+    if (acceptedEvents.has(event)) return true;
+    if (!event && ["publish", "published"].includes(status)) return true;
+    if (!event && !status && isEpfBlogUrl(url)) return true;
+    if (event.includes("publish") && ["", "publish", "published"].includes(status)) return true;
+    return false;
+}
+
 function getBlogCityKey(payload = {}) {
     const city = String(payload.city || "").trim().toLowerCase();
     const url = String(payload.url || "").toLowerCase();
@@ -228,6 +391,12 @@ function inferBlogServiceType(payload = {}) {
         return "Drywall Repair";
     }
 
+    if (/baseboard|trim|moulding|molding|millwork/.test(text)) {
+        if (/install|installation/.test(text)) return "Baseboard Installation";
+        if (/repair|replace|replacement/.test(text)) return "Baseboard Repair and Replacement";
+        return "Baseboard and Trim";
+    }
+
     if (/popcorn|stucco|stipple|textured ceiling|ceiling removal|smooth ceiling|skim coat|ceiling skim/.test(text)) {
         return "Popcorn Ceiling Removal";
     }
@@ -238,6 +407,10 @@ function inferBlogServiceType(payload = {}) {
 function getBlogCityLandingUrl(payload = {}, profile = null) {
     const cityKey = getBlogCityKey(payload);
     const service = inferBlogServiceType(payload).toLowerCase();
+    if (service.includes("baseboard")) {
+        if (cityKey) return `https://epfproservices.com/services/baseboard-installation/${slugifyPathPart(cityKey)}/`;
+        return "https://epfproservices.com/services/baseboard-installation/";
+    }
     if (service.includes("popcorn") || String(payload.url || "").toLowerCase().includes("popcorn")) {
         const map = {
             "stoney creek": "https://epfproservices.com/popcorn-ceiling-removal/hamilton/stoney-creek/",
@@ -345,16 +518,30 @@ function fallbackBlogDraft(payload = {}, profile = null) {
 }
 
 function appendBlogContextToPost(postText = "", blogUrl = "", localSeo = null) {
-    const extraLines = [
-        localSeo?.text || "",
-        blogUrl ? `Blog article: ${blogUrl}` : ""
-    ].filter(Boolean).join("\n");
+    const extraLines = [localSeo?.text || ""].filter(Boolean).join("\n");
     if (!extraLines) return String(postText || "").slice(0, 1500);
     const base = String(postText || "").trim();
     if (base.length + extraLines.length + 2 <= 1500) {
         return `${base}\n\n${extraLines}`.trim();
     }
-    return `${base}\n\n${blogUrl ? `Blog article: ${blogUrl}` : ""}`.trim().slice(0, 1500);
+    return base.slice(0, 1500);
+}
+
+function cleanBlogAutomationPostText(postText = "") {
+    const lines = String(postText || "").split("\n");
+    return lines
+        .filter((line) => {
+            const trimmed = line.trim();
+            if (/^Previous update:/i.test(trimmed)) return false;
+            if (/^More info:\s*https?:\/\//i.test(trimmed)) return false;
+            if (/^Blog article:\s*https?:\/\//i.test(trimmed)) return false;
+            if (/^(Reviews|Service Area|Area Map)\s*►\s*https?:\/\//i.test(trimmed)) return false;
+            return true;
+        })
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+        .slice(0, 1500);
 }
 
 function seededPick(list = [], seed = "", count = 3) {
@@ -434,7 +621,7 @@ async function buildBlogGbpDraft(env, profile, payload = {}) {
         const fallback = fallbackBlogDraft({ ...payload, url: cityLandingUrl || url }, null);
         return {
             ...fallback,
-            postText: appendBlogContextToPost(fallback.postText, url, localSeo),
+            postText: cleanBlogAutomationPostText(appendBlogContextToPost(fallback.postText, url, localSeo)),
             blogUrl: url,
             localSeo,
             generationMode: "fallback_no_profile"
@@ -455,14 +642,13 @@ async function buildBlogGbpDraft(env, profile, payload = {}) {
     try {
         const basics = await fetchLocationBasics(env, profile);
         const built = await composeAiTemplatePost(env, profileForGeneration, overrides, basics);
-        const quickLines = buildQuickLinkLines(profile.defaults || {});
-        let postText = insertQuickLinksBeforeHashtags((built.summary || "").trim(), quickLines);
+        let postText = cleanBlogAutomationPostText((built.summary || "").trim());
         const hashtags = safeJoinHashtags(built.hashtags || [], 220);
         if (hashtags && postText.length + hashtags.length + 2 <= 1500) {
             postText += "\n\n" + hashtags;
         }
         return {
-            postText: appendBlogContextToPost(postText || fallbackBlogDraft(payload, profile).postText, url, localSeo),
+            postText: cleanBlogAutomationPostText(appendBlogContextToPost(postText || fallbackBlogDraft(payload, profile).postText, url, localSeo)),
             cta: built.ctaCode || "LEARN_MORE",
             linkUrl: cityLandingUrl || built.site || url,
             blogUrl: url,
@@ -476,7 +662,7 @@ async function buildBlogGbpDraft(env, profile, payload = {}) {
         const fallback = fallbackBlogDraft({ ...payload, url: cityLandingUrl || url }, profile);
         return {
             ...fallback,
-            postText: appendBlogContextToPost(fallback.postText, url, localSeo),
+            postText: cleanBlogAutomationPostText(appendBlogContextToPost(fallback.postText, url, localSeo)),
             blogUrl: url,
             localSeo,
             generationMode: "fallback_ai_error",
@@ -502,6 +688,33 @@ async function handleBlogWebhookEvents(request, env) {
     });
 }
 
+async function saveBlogWebhookRejection(env, payload = {}, error = "") {
+    const events = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
+    const list = Array.isArray(events) ? events : [];
+    const url = String(payload.url || "").trim();
+    const normalizedUrl = url ? normalizeBlogUrl(url) : "";
+    const now = new Date().toISOString();
+    const record = {
+        id: crypto.randomUUID(),
+        status: "REJECTED",
+        receivedAt: now,
+        updatedAt: now,
+        normalizedUrl,
+        event: String(payload.event || "").trim(),
+        url,
+        title: String(payload.title || "").trim(),
+        excerpt: String(payload.excerpt || "").trim(),
+        city: String(payload.city || "").trim(),
+        service: String(payload.service || "").trim(),
+        publishedAt: String(payload.publishedAt || "").trim(),
+        error
+    };
+    const withoutSameUrl = normalizedUrl ?
+        list.filter((item) => item?.normalizedUrl !== normalizedUrl || item?.status === "POSTED") :
+        list;
+    await setJson(env, BLOG_WEBHOOK_EVENTS_KEY, [record, ...withoutSameUrl].slice(0, MAX_BLOG_WEBHOOK_EVENTS));
+}
+
 async function handleBlogAutomationStatus(request, env) {
     if (request.method !== "GET") {
         return jsonResponse({ success: false, error: "Method not allowed" }, 405);
@@ -509,7 +722,7 @@ async function handleBlogAutomationStatus(request, env) {
     const events = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
     const list = Array.isArray(events) ? events : [];
     const posted = list.filter((item) => item?.status === "POSTED").length;
-    const failed = list.filter((item) => item?.status === "POST_FAILED").length;
+    const failed = list.filter((item) => item?.status === "POST_FAILED" || item?.status === "REJECTED").length;
     const profiles = await getProfiles(env).catch(() => []);
     const epfProfile = profiles.find((profile) => profile?.profileId === EPF_POPCORN_PROFILE_ID && !profile.disabled);
     const hamiltonProfile = profiles.find((profile) => profile?.profileId === HAMILTON_STONEY_PROFILE_ID && !profile.disabled);
@@ -673,13 +886,15 @@ async function handleBlogCreatedWebhook(request, env) {
         return jsonResponse({ success: false, error: "Unauthorized webhook" }, 401);
     }
 
-    let body;
+    let rawText = "";
     try {
-        body = await request.json();
+        rawText = await request.text();
     } catch (_e) {
-        return jsonResponse({ success: false, error: "Invalid JSON body" }, 400);
+        return jsonResponse({ success: false, error: "Unreadable webhook body" }, 400);
     }
 
+    const body = parseBlogWebhookBody(rawText, String(request.headers.get("content-type") || "").toLowerCase());
+    const payload = normalizeBlogWebhookBody(body || {});
     const {
         event,
         url,
@@ -688,17 +903,23 @@ async function handleBlogCreatedWebhook(request, env) {
         city,
         service,
         publishedAt
-    } = body || {};
+    } = payload;
 
-    if (event !== "BLOG_POST_CREATED") {
+    const existingEvents = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
+    const events = Array.isArray(existingEvents) ? existingEvents : [];
+
+    if (!isAcceptedBlogCreatedEvent(payload)) {
+        await saveBlogWebhookRejection(env, payload, "Invalid event type");
         return jsonResponse({ success: false, error: "Invalid event type" }, 400);
     }
 
     if (!url || !title) {
+        await saveBlogWebhookRejection(env, payload, "Missing blog url or title");
         return jsonResponse({ success: false, error: "Missing blog url or title" }, 400);
     }
 
     if (!isEpfBlogUrl(url)) {
+        await saveBlogWebhookRejection(env, payload, "Only epfproservices.com blog URLs are accepted for this automation");
         return jsonResponse({
             success: false,
             error: "Only epfproservices.com blog URLs are accepted for this automation"
@@ -706,8 +927,6 @@ async function handleBlogCreatedWebhook(request, env) {
     }
 
     const normalizedUrl = normalizeBlogUrl(url);
-    const existingEvents = await getJson(env, BLOG_WEBHOOK_EVENTS_KEY, []);
-    const events = Array.isArray(existingEvents) ? existingEvents : [];
     const duplicate = events.find((item) => item && item.normalizedUrl === normalizedUrl);
     if (duplicate && duplicate.status !== "POST_FAILED") {
         return jsonResponse({
@@ -722,13 +941,14 @@ async function handleBlogCreatedWebhook(request, env) {
     }
 
     const profiles = await getProfiles(env);
-    const targetProfile = findBlogTargetProfile(profiles, body || {});
+    const targetProfile = findBlogTargetProfile(profiles, payload);
     if (!targetProfile) {
+        await saveBlogWebhookRejection(env, payload, "No matching GBP profile found for blog city/service");
         return jsonResponse({ success: false, error: "No matching GBP profile found for blog city/service" }, 400);
     }
-    const imageServiceType = inferBlogServiceType(body || {});
-    const cityKey = getBlogCityKey(body || {});
-    const draft = await buildBlogGbpDraft(env, targetProfile, body || {});
+    const imageServiceType = inferBlogServiceType(payload);
+    const cityKey = getBlogCityKey(payload);
+    const draft = await buildBlogGbpDraft(env, targetProfile, payload);
     const now = new Date().toISOString();
     const record = {
         id: crypto.randomUUID(),
