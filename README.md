@@ -109,15 +109,26 @@ Expected JSON:
 Current workflow:
 
 1. Validates the secret and payload.
-2. Stores the blog event in D1-backed KV.
-3. Rejects duplicate blog URLs.
-4. Routes EPF blog posts to the EPF popcorn profile, except Hamilton/Stoney Creek posts, which route to the Stoney Creek/Hamilton location.
-5. Generates GBP post copy.
-6. Uses the city service page for the GBP Learn More button.
-7. Includes the original blog URL in the post body.
-8. Adds rotating local SEO signals from GBP address/service-area data plus city postal-code hints.
-9. Publishes the post to the matched Google Business Profile automatically.
-10. Stores `POSTED` or `POST_FAILED` status with the event.
+2. Accepts the EPF blog URL from the webhook payload. The webhook does not send Google, local, Maps, or GBP post URLs.
+3. Stores the blog event in D1-backed KV.
+4. Rejects duplicate blog URLs.
+5. Routes EPF blog posts to the EPF popcorn profile, except Hamilton/Stoney Creek posts, which route to the Stoney Creek/Hamilton location.
+6. Generates GBP post copy.
+7. Derives the city service page for the GBP Learn More button.
+8. Includes the original blog URL in the post body.
+9. Adds rotating local SEO signals from GBP address/service-area data plus city postal-code hints.
+10. Publishes the post to the matched Google Business Profile automatically.
+11. Stores `POSTED` or `POST_FAILED` status with the event.
+
+For example, if the webhook sends only:
+
+`https://epfproservices.com/blog/popcorn-removal-oakville-cost-finish-guide/`
+
+the poster agent can derive:
+
+- Learn More URL: `https://epfproservices.com/popcorn-ceiling-removal/oakville/`
+- Blog article line: the original webhook blog URL
+- Google/local/maps links: generated later by the GMB poster system, not supplied by the webhook
 
 There is no manual approval step in this flow.
 
