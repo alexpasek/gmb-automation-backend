@@ -1737,11 +1737,16 @@ async function fetchPerformanceKeywords(env, locationName, options = {}) {
     params.set("monthlyRange.end_month.month", String(endParts.month));
     params.set("pageSize", "25");
 
-    const url =
-        `https://businessprofileperformance.googleapis.com/v1/${locationName}/searchkeywords/impressions/monthly?${params.toString()}`;
-    const data = await callBusinessProfileApi(env, url, { method: "GET" });
-    const keywords = Array.isArray(data?.searchKeywordsCounts) ?
-        data.searchKeywordsCounts : [];
+    const keywords = [];
+    let pageToken = "";
+    do {
+        if (pageToken) params.set("pageToken", pageToken);
+        const url =
+            `https://businessprofileperformance.googleapis.com/v1/${locationName}/searchkeywords/impressions/monthly?${params.toString()}`;
+        const data = await callBusinessProfileApi(env, url, { method: "GET" });
+        if (Array.isArray(data?.searchKeywordsCounts)) keywords.push(...data.searchKeywordsCounts);
+        pageToken = data.nextPageToken || "";
+    } while (pageToken);
     return {
         startMonth: `${startParts.year}-${String(startParts.month).padStart(2, "0")}`,
         endMonth: `${endParts.year}-${String(endParts.month).padStart(2, "0")}`,

@@ -3,6 +3,7 @@ main = "src/worker.mjs"
 compatibility_date = "2025-01-01"
 
 [vars]
+BLOG_MONITOR_ENABLED = "true"
 POST_ATTACH_MEDIA = "true"
 AUTO_SCHEDULER_ENABLED = "true"
 AUTO_SCHEDULER_PER_TICK = "2"

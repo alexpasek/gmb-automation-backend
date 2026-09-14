@@ -1,3 +1,4 @@
+import { startOAuth, validOAuthState, oauthCallbackHeaders } from "../oauthState.mjs";
 import { postToGmb } from "../gmb.mjs";
 import { buildYoutubeAuthUrl, getYoutubeChannelForUse, insertYoutubeCommunityDraft, insertYoutubeVideoRecord, listYoutubeChannels, listYoutubeCommunityDrafts, markYoutubeCommunityDraftPosted, saveYoutubeConnection, updateYoutubeVideoRecord } from "../services/youtubeAuth.mjs";
 import { generateYoutubeCommunityPost, generateYoutubeSeo } from "../services/youtubeSeo.mjs";
@@ -72,16 +73,20 @@ export async function handleYoutubeRoute(request, env, helpers = {}) {
 
     try {
         if (pathname === "/api/google/connect-youtube" && request.method === "GET") {
-            return Response.redirect(buildYoutubeAuthUrl(request, env), 302);
+            return startOAuth(request, "youtube", state => buildYoutubeAuthUrl(request, env, state));
         }
 
         if (pathname === "/api/google/oauth/callback" && request.method === "GET") {
+            const headers = oauthCallbackHeaders(request, "youtube");
+            if (!validOAuthState(request, "youtube")) {
+                return textResponse("Invalid or expired Google OAuth session. Connect YouTube again.", 400, headers);
+            }
             const error = searchParams.get("error");
-            if (error) return textResponse(`Google OAuth error: ${error}`, 400, { "Content-Type": "text/plain" });
+            if (error) return textResponse(`Google OAuth error: ${error}`, 400, headers);
             const code = searchParams.get("code");
-            if (!code) return textResponse("Missing Google OAuth code.", 400, { "Content-Type": "text/plain" });
+            if (!code) return textResponse("Missing Google OAuth code.", 400, headers);
             const channel = await saveYoutubeConnection(request, env, code);
-            return textResponse(`YouTube channel connected: ${channel.channelTitle}. You can close this tab.`, 200, { "Content-Type": "text/plain" });
+            return textResponse(`YouTube channel connected: ${channel.channelTitle}. You can close this tab.`, 200, headers);
         }
 
         if (pathname === "/api/youtube/channels" && request.method === "GET") {

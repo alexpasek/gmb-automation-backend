@@ -1,3 +1,5 @@
+import { BLOG_MONITOR_KEY, runBlogMonitor, claimBlogDelivery, finishBlogDelivery, blogDeliveryIssues } from './blogMonitor.mjs';
+import { startOAuth, validOAuthState, oauthCallbackHeaders } from "./oauthState.mjs";
 import { getJson, setJson } from "./storage.mjs";
 import { buildAuthUrl, exchangeCodeForTokens, callBusinessProfileApi } from "./google.mjs";
 import {
@@ -759,11 +761,13 @@ async function handleBlogAutomationStatus(request, env) {
         label,
         detail,
         tooltip,
-        reason: ok ? "Self-test passed." : reason || detail,
+        reason: ok ? "Configuration check passed." : reason || detail,
         checkedAt: new Date().toISOString()
     });
     return jsonResponse({
         success: true,
+        deliveryIssues: await blogDeliveryIssues(env),
+        monitor: await getJson(env, BLOG_MONITOR_KEY, null).then(value => value ? { ...value, seen: undefined } : { enabled: env.BLOG_MONITOR_ENABLED === 'true', lastResult: 'Waiting for first scheduled check.' }),
         agents: {
             validation: mkAgent({
                 ok: !!env.EPF_WEBHOOK_SECRET,
@@ -944,10 +948,25 @@ async function handleBlogCreatedWebhook(request, env) {
 
     const profiles = await getProfiles(env);
     const targetProfile = findBlogTargetProfile(profiles, payload);
-    if (!targetProfile) {
+    if (!targetProfile || targetProfile.disabled) {
         await saveBlogWebhookRejection(env, payload, "No matching GBP profile found for blog city/service");
         return jsonResponse({ success: false, error: "No matching GBP profile found for blog city/service" }, 400);
     }
+    if (!await claimBlogDelivery(env, normalizedUrl)) {
+        return jsonResponse({ success: false, error: "Duplicate blog url", duplicate: { status: "CLAIMED_OR_NEEDS_REVIEW" } }, 409);
+    }
+    try {
+        const response = await publishClaimedBlog(env, targetProfile, payload, normalizedUrl, events);
+        await finishBlogDelivery(env, normalizedUrl, response.ok ? "POSTED" : "NEEDS_REVIEW");
+        return response;
+    } catch (error) {
+        await finishBlogDelivery(env, normalizedUrl, "NEEDS_REVIEW");
+        return jsonResponse({ success: false, error: "Blog delivery needs review", data: { status: "NEEDS_REVIEW", postError: error.message } }, 500);
+    }
+}
+
+async function publishClaimedBlog(env, targetProfile, payload, normalizedUrl, events) {
+    const { event, url, title, excerpt, city, service, publishedAt } = payload;
     const imageServiceType = inferBlogServiceType(payload);
     const cityKey = getBlogCityKey(payload);
     const draft = await buildBlogGbpDraft(env, targetProfile, payload);
@@ -2682,7 +2701,7 @@ async function handleRequest(request, env, ctx) {
     // --- GBP: list accounts ---
     if (pathname === "/accounts" && request.method === "GET") {
         const url =
-            "https://mybusinessbusinessinformation.googleapis.com/v1/accounts";
+            "https://mybusinessaccountmanagement.googleapis.com/v1/accounts";
         const data = await callBusinessProfileApi(env, url);
         return jsonResponse(data);
     }
@@ -2720,52 +2739,25 @@ async function handleRequest(request, env, ctx) {
     }
 
     if ((pathname === "/auth" || pathname === "/auth/") && request.method === "GET") {
-        const authUrl = buildAuthUrl(env);
-
-        // Debug logging to verify env and redirect URL during OAuth starts
-        console.log("AUTH DEBUG: env.GOOGLE_CLIENT_ID =", env.GOOGLE_CLIENT_ID);
-        console.log("AUTH DEBUG: env.GOOGLE_REDIRECT_URI =", env.GOOGLE_REDIRECT_URI);
-        console.log("AUTH DEBUG: redirecting to:", authUrl);
-
-        return Response.redirect(authUrl, 302);
+        return startOAuth(request, "gbp", state => buildAuthUrl(env, state));
     }
 
     if (
         (pathname === "/oauth2callback" || pathname === "/oauth2callback/") &&
         request.method === "GET"
     ) {
-        // 🔍 DEBUG: log full URL and all query params
-        console.log("CALLBACK DEBUG: request.url =", request.url);
-        const allParams = [];
-        for (const [k, v] of searchParams.entries()) {
-            allParams.push(`${k}=${v}`);
+        const headers = oauthCallbackHeaders(request, "gbp");
+        if (!validOAuthState(request, "gbp")) {
+            return textResponse("Invalid or expired Google OAuth session. Visit /auth to try again.", 400, headers);
         }
-        console.log("CALLBACK DEBUG: searchParams =", allParams.join("&") || "(none)");
-
         const errorParam = searchParams.get("error");
         if (errorParam) {
-            return textResponse(
-                "Google OAuth error from Google: " + errorParam +
-                ". Go back to /auth and try again.",
-                400, { "Content-Type": "text/plain" }
-            );
+            return textResponse("Google OAuth error: " + errorParam + ". Visit /auth to try again.", 400, headers);
         }
-
         const code = searchParams.get("code");
-        if (!code) {
-            return textResponse(
-                "Missing code. This page should only be opened by Google after you start from /auth.",
-                400, { "Content-Type": "text/plain" }
-            );
-        }
-
-        console.log("CALLBACK DEBUG: have code starting with", code.slice(0, 8), "...");
-
+        if (!code) return textResponse("Missing Google OAuth code. Visit /auth to try again.", 400, headers);
         await exchangeCodeForTokens(env, code);
-        return textResponse(
-            "Google Business Profile is connected. You can close this tab.",
-            200, { "Content-Type": "text/plain" }
-        );
+        return textResponse("Google Business Profile is connected. You can close this tab.", 200, headers);
     }
 
     // Sync profiles from Google locations into D1 (kv key = "profiles")
@@ -3648,6 +3640,7 @@ export default {
     },
 
     async scheduled(controller, env, ctx) {
+        ctx.waitUntil(runBlogMonitor(env, handleBlogCreatedWebhook).catch(error => console.error("Blog monitor error:", error.message)));
         try {
             await scheduledTick(env);
             await runDueYoutubeScheduledJobs(env);

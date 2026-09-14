@@ -1,0 +1,39 @@
+{
+  "campaign": "EPF painting, baseboard and skylight posts — August 23, 2026",
+  "profileId": "profile-116118369255335894193-5223601481889907889",
+  "profileName": "Popcorn Ceiling Removal - EPF Pro Services",
+  "city": "Mississauga",
+  "imageDisclosure": "AI-generated promotional creatives; not evidence of completed customer projects.",
+  "posts": [
+    {
+      "topic": "House painters and interior painting",
+      "neighbourhoods": ["Meadowvale Village", "East Credit"],
+      "street": "Old Derry Road",
+      "serviceType": "Interior painting",
+      "imagePath": "backend/campaigns/assets/2026-08-23-epf-services/house-painters-interior-painting-mississauga.png",
+      "mediaUrl": "https://gmb-automation-backend.webtoronto22.workers.dev/media/ai%2F1787506855183-vkx5cqzt67i.png",
+      "linkUrl": "https://epfproservices.com/services/interior-painting/?utm_source=google&utm_medium=organic&utm_campaign=gbp_mississauga_interior_painting",
+      "postText": "Looking for house painters in Mississauga? Homes in Meadowvale Village and East Credit, including established properties near Old Derry Road, often combine open living areas with detailed trim, stair walls, and strong window light. Those features can expose dents, drywall patches, uneven sheen, and rough cut lines if preparation is rushed.\n\nEPF Pro Services prepares the room before interior painting begins. Floors and furniture are protected, suitable wall damage is repaired, glossy areas are scuff sanded, gaps are caulked where appropriate, and stains are primed before finish coats. Careful cutting around ceilings, baseboards, windows, and doors helps create clean transitions. Colour and sheen choices are reviewed for the room's lighting, traffic, and cleaning needs.\n\nThe goal is an even, durable interior finish with organized protection and cleanup. Explore our interior painting service and request an estimate:\nhttps://epfproservices.com/services/interior-painting/\n\n#HousePainters #InteriorPainting #Mississauga #MeadowvaleVillage"
+    },
+    {
+      "topic": "Baseboard installation",
+      "neighbourhoods": ["Applewood", "Dixie"],
+      "street": "Bloor Street",
+      "serviceType": "Baseboard installation",
+      "imagePath": "backend/campaigns/assets/2026-08-23-epf-services/baseboard-installation-mississauga.png",
+      "mediaUrl": "https://gmb-automation-backend.webtoronto22.workers.dev/media/ai%2F1787506856321-q81jgjupzys.png",
+      "linkUrl": "https://epfproservices.com/services/baseboard-installation/mississauga/?utm_source=google&utm_medium=organic&utm_campaign=gbp_mississauga_baseboard_installation",
+      "postText": "Planning baseboard installation in Mississauga? Condos, townhomes, and detached homes in Applewood and Dixie, including properties near Bloor Street, may have undersized trim, damaged corners, uneven wall gaps, or baseboards removed during flooring and drywall updates. New trim works best when its height, profile, and material suit the doors, flooring, and existing casing.\n\nEPF Pro Services measures each room, plans joints and returns, protects finished floors, and cuts inside and outside corners for a fitted appearance. Installation can include fastening, filling nail holes, caulking suitable wall gaps, sanding repairs, priming exposed material, and applying finish paint where included in the scope. Floor changes and out-of-square corners are reviewed before cutting because they affect how the trim sits.\n\nA coordinated approach creates cleaner room edges and consistent transitions. View our Mississauga baseboard installation service:\nhttps://epfproservices.com/services/baseboard-installation/mississauga/\n\n#BaseboardInstallation #FinishCarpentry #MississaugaRenovation #Applewood"
+    },
+    {
+      "topic": "Skylight drywall repair",
+      "neighbourhoods": ["Sawmill Valley", "Erindale"],
+      "street": "Burnhamthorpe Road West",
+      "serviceType": "Skylight drywall repair",
+      "imagePath": "backend/campaigns/assets/2026-08-23-epf-services/skylight-drywall-repair-mississauga.png",
+      "mediaUrl": "https://gmb-automation-backend.webtoronto22.workers.dev/media/ai%2F1787506857281-hrvg9jhiby6.png",
+      "linkUrl": "https://epfproservices.com/skylight-drywall-repair/mississauga/?utm_source=google&utm_medium=organic&utm_campaign=gbp_mississauga_skylight_drywall_repair",
+      "postText": "Need skylight drywall repair in Mississauga? Homes in Sawmill Valley and Erindale, including properties near Burnhamthorpe Road West, can develop cracked corner beads, peeling paint, stained compound, or uneven drywall around a skylight light well. Strong daylight makes ridges and patch edges especially visible on these angled surfaces.\n\nBefore cosmetic repairs begin, any active roof, flashing, condensation, or skylight leak should be diagnosed and corrected by the appropriate qualified professional. EPF Pro Services can then assess the dry interior surfaces, remove loose material where suitable, reinforce damaged corners or seams, rebuild compound in controlled coats, sand with dust-control equipment, prime repaired areas, and apply compatible finish paint when included. Directional-light checks help evaluate the completed planes and edges.\n\nRestore the interior finish around your skylight. View our Mississauga service page and request an estimate:\nhttps://epfproservices.com/skylight-drywall-repair/mississauga/\n\n#SkylightDrywallRepair #DrywallRepair #Mississauga #SawmillValley"
+    }
+  ]
+}

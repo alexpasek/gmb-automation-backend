@@ -2,7 +2,7 @@ import { getJson, setJson } from "./storage.mjs";
 
 const TOKEN_KEY = "tokens";
 
-export function buildAuthUrl(env) {
+export function buildAuthUrl(env, state) {
     const redirectUri = env.GOOGLE_REDIRECT_URI;
     const params = new URLSearchParams({
         client_id: env.GOOGLE_CLIENT_ID,
@@ -10,7 +10,8 @@ export function buildAuthUrl(env) {
         response_type: "code",
         access_type: "offline",
         prompt: "consent",
-        scope: "https://www.googleapis.com/auth/business.manage"
+        scope: "https://www.googleapis.com/auth/business.manage",
+        state
     });
     return "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
 }
@@ -45,9 +46,6 @@ export async function exchangeCodeForTokens(env, code) {
         tokens.expiry_date = now + tokens.expires_in * 1000;
     }
 
-    // Debug: log tokens JSON for production debugging (remove if noisy)
-    console.log("TOKENS_JSON_FOR_PROD = " + JSON.stringify(tokens));
-
     await saveTokens(env, tokens);
     return tokens;
 }
@@ -63,7 +61,12 @@ async function refreshAccessTokenIfNeeded(env, tokens) {
     if (tokens.expiry_date && tokens.expiry_date - 60000 > now) {
         return tokens; // still valid
     }
-    if (!tokens.refresh_token) return tokens;
+    if (!tokens.refresh_token) {
+        if (tokens.expiry_date && tokens.expiry_date <= now) {
+            throw new Error("Google access token expired. Visit /auth to reconnect Google.");
+        }
+        return tokens;
+    }
 
     const body = new URLSearchParams({
         client_id: env.GOOGLE_CLIENT_ID,
@@ -79,9 +82,11 @@ async function refreshAccessTokenIfNeeded(env, tokens) {
     });
 
     if (!resp.ok) {
-        const text = await resp.text();
-        console.error("Refresh token failed:", text);
-        return tokens;
+        const error = await resp.json().catch(() => ({}));
+        if (error.error === "invalid_grant") {
+            throw new Error("Google authorization expired or was revoked. Visit /auth to reconnect Google.");
+        }
+        throw new Error(`Google token refresh failed (${resp.status}). Please try again later.`);
     }
 
     const data = await resp.json();

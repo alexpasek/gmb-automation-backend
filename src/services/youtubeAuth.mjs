@@ -111,7 +111,7 @@ export async function ensureYoutubeTables(env) {
   `).run();
 }
 
-export function buildYoutubeAuthUrl(request, env) {
+export function buildYoutubeAuthUrl(request, env, state) {
     const origin = new URL(request.url).origin;
     const redirectUri = env.YOUTUBE_REDIRECT_URI || `${origin}/api/google/oauth/callback`;
     const params = new URLSearchParams({
@@ -121,7 +121,7 @@ export function buildYoutubeAuthUrl(request, env) {
         access_type: "offline",
         prompt: "consent",
         include_granted_scopes: "true",
-        state: "youtube",
+        state,
         scope: YOUTUBE_SCOPES.join(" ")
     });
     return "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
@@ -253,7 +253,11 @@ export async function getYoutubeAccessToken(env, channelRow) {
         body
     });
     if (!resp.ok) {
-        await markReconnectRequired(env, row.id, "YouTube token refresh failed: " + await resp.text());
+        const error = await resp.json().catch(() => ({}));
+        if (error.error === "invalid_grant") {
+            await markReconnectRequired(env, row.id, "YouTube authorization expired or was revoked; reconnect channel");
+        }
+        throw new Error(`YouTube token refresh failed (${resp.status}); try again later`);
     }
     const data = await resp.json();
     const encryptedAccess = await encryptToken(env, data.access_token);
