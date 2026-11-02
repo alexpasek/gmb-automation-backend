@@ -1,3 +1,4 @@
+import { OfferValidationError } from "./offers.mjs";
 import { BLOG_MONITOR_KEY, runBlogMonitor, claimBlogDelivery, finishBlogDelivery, blogDeliveryIssues } from './blogMonitor.mjs';
 import { startOAuth, validOAuthState, oauthCallbackHeaders } from "./oauthState.mjs";
 import { getJson, setJson } from "./storage.mjs";
@@ -3634,7 +3635,7 @@ export default {
         } catch (e) {
             console.error("Unhandled error:", e);
             return jsonResponse({ error: String(e && e.message ? e.message : e) },
-                500
+                e instanceof OfferValidationError ? 400 : 500
             );
         }
     },

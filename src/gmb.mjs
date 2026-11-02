@@ -1,3 +1,4 @@
+import { buildOfferFields, validateOffer } from "./offers.mjs";
 import { getJson, setJson } from "./storage.mjs";
 import { callBusinessProfileAPI, callBusinessProfileApi, getAccessToken } from "./google.mjs";
 import { aiGenerateSummaryAndHashtags, pickNeighbourhood, safeJoinHashtags } from "./ai.mjs";
@@ -614,6 +615,7 @@ export async function deletePhotoScheduled(env, id) {
 }
 
 export async function commitScheduledPosts(env, items) {
+    for (const item of Array.isArray(items) ? items : []) validateOffer(item.body, item.runAt);
     const normalized = Array.isArray(items) ?
         items
         .map((it) => ({
@@ -1088,6 +1090,7 @@ export async function enqueueScheduledBulk(env, payload) {
             body: {...normalizedBody, mediaUrl, autoGenerateSummary },
         });
     });
+    for (const item of items) validateOffer(item.body, item.runAt);
     const existing = await getScheduledPosts(env);
     const combined = existing.concat(
         items.map((it) => ({
@@ -1103,6 +1106,7 @@ export async function enqueueScheduledBulk(env, payload) {
 export async function draftScheduledBulk(env, payload) {
     const { profileId, images = [], startAt, cadenceDays = 1, body = {}, autoGenerateSummary = false } = payload || {};
     if (!profileId) throw new Error("Missing profileId");
+    validateOffer(body);
     const overrides = normalizeBodyMedia(env, body);
     const runStart = startAt ? new Date(startAt) : new Date(Date.now() + 3_600_000);
     if (isNaN(runStart.getTime())) throw new Error("Invalid startAt");
@@ -1812,6 +1816,7 @@ export async function fetchPerformanceMetrics(env, profileId, options = {}) {
 }
 
 export async function postToGmb(env, body) {
+    validateOffer(body);
     const profileId = (body && body.profileId) || "";
     if (!profileId) throw new Error("Missing profileId");
 
@@ -1870,8 +1875,6 @@ export async function postToGmb(env, body) {
         "";
     const overlayUsed = ensureAbsoluteMediaUrl(env, (body && body.overlayUrl) || defaults.overlayUrl || "");
     const phoneOverride = (body && body.phone) || defaults.phone || "";
-    const providedLinkUrl = linkUrl;
-    const siteCandidate = basics.websiteUri || profile.landingUrl || "";
     let mediaUrlRaw = ensureAbsoluteMediaUrl(env, (body && body.mediaUrl) || "");
     let usedFromPool = false;
 
@@ -1895,7 +1898,7 @@ export async function postToGmb(env, body) {
         });
     }
 
-    const ctaObj = buildCallToAction(ctaCode, linkUrl, basics, profile, phoneOverride);
+    const ctaObj = body?.topicType === "OFFER" ? null : buildCallToAction(ctaCode, linkUrl, basics, profile, phoneOverride);
     // Safety: CALL should never include a url to satisfy GBP validation
     const safeCta =
         ctaObj && ctaObj.actionType === "CALL" ? { actionType: "CALL" } :
@@ -1911,7 +1914,7 @@ export async function postToGmb(env, body) {
         resolvedCta: safeCta
     });
 
-    if ((ctaCode === "CALL" || ctaCode === "CALL_NOW") && !safeCta) {
+    if (body?.topicType !== "OFFER" && (ctaCode === "CALL" || ctaCode === "CALL_NOW") && !safeCta) {
         throw new Error("Call now CTA requires a phone on the profile (or tel:+ link).");
     }
 
@@ -1931,7 +1934,7 @@ export async function postToGmb(env, body) {
     if (safeCta) {
         payload.callToAction = safeCta;
     }
-    const linkUsed = safeCta && safeCta.url ? safeCta.url : linkUrl;
+    const linkUsed = topicType === "OFFER" ? String(body.offerRedeemUrl || "").trim() : (safeCta && safeCta.url ? safeCta.url : linkUrl);
 
     // EVENT details
     if (topicType === "EVENT") {
@@ -1966,23 +1969,7 @@ export async function postToGmb(env, body) {
         }
     }
 
-    // OFFER details
-    if (topicType === "OFFER") {
-        const offerTitle = body && body.offerTitle ? String(body.offerTitle) : "";
-        const coupon = body && body.offerCoupon ? String(body.offerCoupon) : "";
-        const offerRedeemUrl =
-            (body && body.offerRedeemUrl && String(body.offerRedeemUrl)) ||
-            providedLinkUrl ||
-            siteCandidate ||
-            "";
-
-        payload.offer = {
-            summary: offerTitle || undefined,
-            couponCode: coupon || undefined,
-            redemptionUrl: offerRedeemUrl || undefined
-                // Additional fields available per GBP API
-        };
-    }
+    if (topicType === "OFFER") Object.assign(payload, buildOfferFields(body));
 
     let usedImageUrl = "";
     if (!mediaUrlRaw && Array.isArray(profile.photoPool) && profile.photoPool.length) {
@@ -2299,6 +2286,7 @@ export async function runDueScheduledPhotos(env) {
 }
 
 export async function enqueueScheduledPost(env, payload) {
+    validateOffer(payload.body, payload.runAt);
     const id = crypto.randomUUID();
     const runAt = new Date(payload.runAt).toISOString();
     const item = {
@@ -2324,6 +2312,7 @@ export async function updateScheduledPost(env, id, updates) {
         body: updates.body ? normalizeBodyMedia(env, updates.body) : current.body,
         status: current.status || "QUEUED"
     };
+    validateOffer(updated.body, updated.runAt);
     await upsertScheduledRow(env, updated);
     return updated;
 }
