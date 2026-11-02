@@ -11,7 +11,7 @@ function env() {
  return { values, writes, D1_DB: { prepare(sql) { let args=[]; return { bind(...a) {args=a;return this;}, async first(){return values.has(args[0])?{value:values.get(args[0])}:null;}, async all(){return {results:[]};}, async run(){writes.push({sql,args});if(sql.includes('INSERT INTO kv'))values.set(args[0],args[1]);return {success:true};} }; } } };
 }
 test('offer uses documented Google event and offer fields', () => {
- assert.deepEqual(buildOfferFields(valid), { event:{title:valid.offerTitle,schedule:{startDate:{year:2099,month:11,day:1},endDate:{year:2099,month:11,day:30}}}, offer:{couponCode:'TOGETHER30',redeemOnlineUrl:valid.offerRedeemUrl,termsConditions:valid.offerTerms} });
+ assert.deepEqual(buildOfferFields(valid), { event:{title:valid.offerTitle,schedule:{startDate:{year:2099,month:11,day:1},startTime:{hours:0,minutes:0,seconds:0},endDate:{year:2099,month:11,day:30},endTime:{hours:23,minutes:59,seconds:59}}}, offer:{couponCode:'TOGETHER30',redeemOnlineUrl:valid.offerRedeemUrl,termsConditions:valid.offerTerms} });
  assert.deepEqual(buildOfferFields({...valid,offerCoupon:'',offerRedeemUrl:'',offerTerms:''}).offer,{});
 });
 test('missing dates, impossible dates, reversed dates and unsafe links rejected', () => {

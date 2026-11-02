@@ -27,7 +27,7 @@ export function buildOfferFields(body = {}) {
         if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) fail("Offer redemption link must be an http:// or https:// URL without credentials.");
     }
     return {
-        event: { title, schedule: { startDate, endDate } },
+        event: { title, schedule: { startDate, startTime: { hours: 0, minutes: 0, seconds: 0 }, endDate, endTime: { hours: 23, minutes: 59, seconds: 59 } } },
         offer: {
             ...(couponCode ? { couponCode } : {}),
             ...(redeemOnlineUrl ? { redeemOnlineUrl } : {}),
